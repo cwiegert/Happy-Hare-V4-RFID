@@ -25,6 +25,7 @@
 
 import logging
 from .gate_state import EVENT_CHANGED, EVENT_UID_ONLY, EVENT_REMOVED
+from .log import logger
 
 
 class KlipperInterface:
@@ -73,26 +74,26 @@ class KlipperInterface:
             if event_type == EVENT_CHANGED:
                 script = "_NFC_SPOOL_CHANGED GATE={} SPOOL_ID={} UID={}".format(
                     gate, spool_id, uid_hex)
-                logging.info("nfc_gates: gate %d → spool %d detected (UID %s)",
+                logger.info("nfc_gates: gate %d → spool %d detected (UID %s)",
                              gate, spool_id, uid_hex)
 
             elif event_type == EVENT_UID_ONLY:
                 script = "_NFC_TAG_NO_SPOOL GATE={} UID={}".format(gate, uid_hex)
-                logging.info("nfc_gates: gate %d → tag %s (no spool ID in memory)",
+                logger.info("nfc_gates: gate %d → tag %s (no spool ID in memory)",
                              gate, uid_hex)
 
             elif event_type == EVENT_REMOVED:
                 script = "_NFC_SPOOL_REMOVED GATE={}".format(gate)
-                logging.info("nfc_gates: gate %d → spool removed "
+                logger.info("nfc_gates: gate %d → spool removed "
                              "(was spool_id=%s)", gate, spool_id)
 
             else:
-                logging.warning("nfc_gates: unknown event type %r", event_type)
+                logger.warning("nfc_gates: unknown event type %r", event_type)
                 return
 
             gcode.run_script(script)
 
         except Exception:
-            logging.exception(
+            logger.exception(
                 "nfc_gates: GCode dispatch failed for gate %d event %r",
                 gate, event_type)

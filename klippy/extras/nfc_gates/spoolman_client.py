@@ -50,6 +50,8 @@ import json
 import logging
 import time
 
+from .log import logger
+
 try:
     # Python 3
     import urllib.request as _urllib_request
@@ -129,7 +131,7 @@ class SpoolmanClient:
             spool_id, expiry = self._cache[uid_norm]
             if time.monotonic() < expiry:
                 if self._debug >= 2:
-                    logging.debug(
+                    logger.debug(
                         "spoolman: cache hit uid=%s → spool_id=%s", uid_hex, spool_id)
                 return spool_id
             # Expired — remove stale entry
@@ -138,7 +140,7 @@ class SpoolmanClient:
         # ── API request ───────────────────────────────────────────────────────
         url = '{}/api/v1/spool'.format(self._base_url)
         if self._debug >= 2:
-            logging.debug("spoolman: GET %s (looking for uid=%s, key=%s)",
+            logger.debug("spoolman: GET %s (looking for uid=%s, key=%s)",
                           url, uid_hex, self._rfid_key)
         try:
             req = _urllib_request.Request(
@@ -148,14 +150,14 @@ class SpoolmanClient:
             with _urllib_request.urlopen(req, timeout=self._timeout) as resp:
                 spools = json.loads(resp.read().decode('utf-8'))
         except _urllib_error.URLError as e:
-            logging.warning("spoolman: request failed (%s): %s", url, e)
+            logger.warning("spoolman: request failed (%s): %s", url, e)
             return None
         except Exception as e:
-            logging.warning("spoolman: unexpected error querying %s: %s", url, e)
+            logger.warning("spoolman: unexpected error querying %s: %s", url, e)
             return None
 
         if not isinstance(spools, list):
-            logging.warning("spoolman: unexpected response type %s from %s",
+            logger.warning("spoolman: unexpected response type %s from %s",
                             type(spools).__name__, url)
             return None
 
@@ -177,9 +179,9 @@ class SpoolmanClient:
 
         if self._debug >= 1:
             if spool_id is not None:
-                logging.info("spoolman: uid=%s → spool_id=%d", uid_hex, spool_id)
+                logger.info("spoolman: uid=%s → spool_id=%d", uid_hex, spool_id)
             else:
-                logging.info(
+                logger.info(
                     "spoolman: uid=%s not found in %d spool records "
                     "(check the '%s' extra field in Spoolman)",
                     uid_hex, len(spools), self._rfid_key)
@@ -194,4 +196,4 @@ class SpoolmanClient:
         """Flush all cached UID → spool_id mappings."""
         self._cache.clear()
         if self._debug >= 2:
-            logging.debug("spoolman: cache cleared")
+            logger.debug("spoolman: cache cleared")

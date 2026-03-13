@@ -67,6 +67,7 @@ from nfc_gates.pn532_driver      import PN532Driver
 from nfc_gates.gate_state        import GateState
 from nfc_gates.klipper_interface import KlipperInterface
 from nfc_gates.spoolman_client   import SpoolmanClient
+from nfc_gates.log               import logger
 
 
 # Module-level registry — each load_config_prefix() call appends its NfcGate instance.
@@ -157,11 +158,11 @@ class NfcGate:
                 timeout=spoolman_timeout,
                 cache_ttl=spoolman_cache_ttl,
                 debug=self._debug)
-            logging.info("nfc_gate: [%s] Spoolman enabled — url=%s rfid_key=%s",
+            logger.info("nfc_gate: [%s] Spoolman enabled — url=%s rfid_key=%s",
                          self._name, spoolman_url, spoolman_rfid_key)
         else:
             self._spoolman = None
-            logging.warning(
+            logger.warning(
                 "nfc_gate: [%s] spoolman_url not set — gate will report UIDs "
                 "but cannot resolve spool IDs.  Set spoolman_url in [nfc_gate] "
                 "or in [nfc_gate %s].", self._name, self._name)
@@ -213,7 +214,7 @@ class NfcGate:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _handle_connect(self):
-        logging.info(
+        logger.info(
             "nfc_gate: [%s] connected — gate=%d, poll=%.0fs, "
             "absent_threshold=%d, debug=%d",
             self._name, self._gate, self._poll_interval,
@@ -222,15 +223,15 @@ class NfcGate:
         try:
             self._reader.init()
             if self._reader.is_alive():
-                logging.info("nfc_gate: [%s] PN532 reader OK", self._name)
+                logger.info("nfc_gate: [%s] PN532 reader OK", self._name)
             else:
                 self._failed = True
-                logging.error(
+                logger.error(
                     "nfc_gate: [%s] PN532 did not respond after init — "
                     "check wiring and I2C address (default 0x24)", self._name)
         except Exception as e:
             self._failed = True
-            logging.error("nfc_gate: [%s] init error: %s", self._name, e)
+            logger.error("nfc_gate: [%s] init error: %s", self._name, e)
 
         if not self._failed:
             self._stop_event.clear()
@@ -249,20 +250,20 @@ class NfcGate:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _poll_loop(self):
-        logging.info("nfc_gate: [%s] polling thread started", self._name)
+        logger.info("nfc_gate: [%s] polling thread started", self._name)
         while not self._stop_event.is_set():
             try:
                 self._poll()
             except Exception:
-                logging.exception("nfc_gate: [%s] poll error", self._name)
+                logger.exception("nfc_gate: [%s] poll error", self._name)
             self._stop_event.wait(timeout=self._poll_interval)
-        logging.info("nfc_gate: [%s] polling thread stopped", self._name)
+        logger.info("nfc_gate: [%s] polling thread stopped", self._name)
 
     def _poll(self):
         uid_hex = self._reader.read_tag()
 
         if self._debug >= 1 and uid_hex is None:
-            logging.info("nfc_gate: [%s] gate %d — no tag (miss %d)",
+            logger.info("nfc_gate: [%s] gate %d — no tag (miss %d)",
                          self._name, self._gate,
                          self._state.miss_count + 1)
 
@@ -282,7 +283,7 @@ class NfcGate:
         if event is not None:
             event_type, gate, uid, spool = event
             if self._debug >= 1:
-                logging.info(
+                logger.info(
                     "nfc_gate: [%s] gate %d — %s uid=%s spool=%s",
                     self._name, gate, event_type, uid, spool)
             self._klipper.dispatch(event_type, gate, uid, spool)

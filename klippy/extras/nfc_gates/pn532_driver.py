@@ -66,6 +66,8 @@
 import time
 import logging
 
+from .log import logger
+
 # ─────────────────────────────────────────────────────────────────────────────
 # PN532 frame constants
 # ─────────────────────────────────────────────────────────────────────────────
@@ -215,7 +217,7 @@ class PN532Driver:
         raw    = bytearray(params['response'])
         payload = self._check_frame(raw, expected_cmd_resp)
         if payload is None and self._debug >= 2:
-            logging.debug(
+            logger.debug(
                 "nfc_gates: gate %d (PN532) frame error — "
                 "status=0x%02X cmd_resp=0x%02X raw=%s",
                 self._gate,
@@ -240,11 +242,11 @@ class PN532Driver:
         # Response CMD code for SAMConfiguration is 0x15
         payload = self._recv(self._release_delay, 0x15, read_len=12)
         if payload is None:
-            logging.warning("nfc_gates: gate %d (PN532) SAMConfiguration "
+            logger.warning("nfc_gates: gate %d (PN532) SAMConfiguration "
                             "no response — check wiring and I2C address",
                             self._gate)
         elif self._debug >= 2:
-            logging.debug("nfc_gates: gate %d (PN532) SAMConfiguration OK",
+            logger.debug("nfc_gates: gate %d (PN532) SAMConfiguration OK",
                           self._gate)
 
     def is_alive(self):
@@ -259,14 +261,14 @@ class PN532Driver:
             payload = self._recv(self._release_delay, 0x03, read_len=14)
             if payload is not None and len(payload) >= 4:
                 if self._debug >= 1:
-                    logging.info(
+                    logger.info(
                         "nfc_gates: gate %d (PN532) firmware IC=0x%02X "
                         "Ver=%d.%d",
                         self._gate, payload[0], payload[1], payload[2])
                 return True
             return False
         except Exception as e:
-            logging.debug("nfc_gates: gate %d (PN532) is_alive error: %s",
+            logger.debug("nfc_gates: gate %d (PN532) is_alive error: %s",
                           self._gate, e)
             return False
 
@@ -296,7 +298,7 @@ class PN532Driver:
         self._release_target()
 
         if self._debug >= 2:
-            logging.debug("nfc_gates: gate %d (PN532) read_tag → uid=%s",
+            logger.debug("nfc_gates: gate %d (PN532) read_tag → uid=%s",
                           self._gate, uid_hex)
 
         return uid_hex
@@ -325,7 +327,7 @@ class PN532Driver:
         # payload[0] = NbTg (number of targets found)
         if not payload or payload[0] == 0:
             if self._debug >= 2:
-                logging.debug("nfc_gates: gate %d (PN532) no tag in field",
+                logger.debug("nfc_gates: gate %d (PN532) no tag in field",
                               self._gate)
             return None, None
 
@@ -346,7 +348,7 @@ class PN532Driver:
         uid_hex = ''.join('{:02X}'.format(b) for b in nfcid)
 
         if self._debug >= 2:
-            logging.debug("nfc_gates: gate %d (PN532) tag found uid=%s tg=%d",
+            logger.debug("nfc_gates: gate %d (PN532) tag found uid=%s tg=%d",
                           self._gate, uid_hex, tg)
 
         return uid_hex, tg
