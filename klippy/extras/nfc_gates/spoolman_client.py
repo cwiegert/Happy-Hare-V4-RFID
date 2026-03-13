@@ -2,7 +2,7 @@
 #
 # Spoolman API client — looks up a spool record by NFC tag UID.
 #
-# Integration model (Approach B — UID lookup)
+# Integration model (UID lookup)
 # ───────────────────────────────────────────
 # Tags are never written to.  Each tag's factory UID is registered in
 # Spoolman by setting a custom extra field (default key: "rfid") to the
@@ -97,9 +97,14 @@ class SpoolmanClient:
     @staticmethod
     def _normalise_uid(uid_str):
         """
-        Strip separators and uppercase so e.g. "04:a2:3b" == "04A23B".
+        Strip surrounding quotes, separators, and uppercase so that
+        e.g. '"04:a2:3b"' == "04A23B".
         """
-        return uid_str.upper().replace(':', '').replace('-', '').replace(' ', '')
+        return (uid_str.strip('"\'')
+                       .upper()
+                       .replace(':', '')
+                       .replace('-', '')
+                       .replace(' ', ''))
 
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -161,7 +166,9 @@ class SpoolmanClient:
             stored_raw = extra.get(self._rfid_key)
             if not stored_raw:
                 continue
-            stored_norm = self._normalise_uid(str(stored_raw))
+            stored_cleaned = str(stored_raw).strip('"\'')
+            stored_norm = self._normalise_uid(stored_cleaned)
+  #          stored_norm = self._normalise_uid(str(stored_raw))
             if stored_norm == uid_norm:
                 raw_id = spool.get('id')
                 if raw_id is not None:

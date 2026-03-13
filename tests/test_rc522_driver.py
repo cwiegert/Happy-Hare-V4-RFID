@@ -23,7 +23,6 @@ from rc522_driver import (
     RC522Driver,
     _CommandReg, _TxControlReg, _BitFramingReg,
     _ComIrqReg, _ErrorReg, _FIFOLevelReg, _ControlReg, _FIFODataReg,
-    _CRCResultRegL, _CRCResultRegH,
     _PCD_RESETPHASE,
 )
 
@@ -94,33 +93,21 @@ def _build_no_tag_sequence():
     ]
 
 
-def _build_tag_with_spool_sequence(uid=(0xA3, 0xF2, 0x00, 0xCC), spool_id=1042):
+def _build_tag_sequence(uid=(0xA3, 0xF2, 0x00, 0xCC)):
     """
-    Minimal response sequence that guides RC522Driver through the full
-    REQA → ANTICOLL → SELECT → READ pages 4-7 happy path.
+    Response sequence for a successful REQA → ANTICOLL read.
 
-    This is simplified — it covers just enough register reads to exercise
-    the flow without modelling every RC522 register interaction.
+    The driver performs only these two stages (no SELECT, no CRC, no memory
+    READ), so this is the complete happy-path mock.
     """
     chk = uid[0] ^ uid[1] ^ uid[2] ^ uid[3]
-    spool_bytes = list(str(spool_id).encode('ascii'))
-    spool_bytes += [0x00] * (16 - len(spool_bytes))  # null-pad to 16 bytes
-
-    # For each _transceive call we need:
-    #   ComIEnReg read, ComIrqReg read×2, FIFOLevelReg read×2,
-    #   BitFramingReg read×2, then result reads
-    # This mock provides the minimum reads needed.
-    # Unexpectedly-requested registers return 0x00.
 
     def transceive_ok(fifo_data):
-        """Build reads for a successful transceive with fifo_data bytes.
-        Order matches every spi_transfer() call inside _transceive()."""
         return [
             _reg_read_resp(_ComIrqReg,    0x7F),            # ComIEnReg  read
             _reg_read_resp(_ComIrqReg,    0xFF),            # ComIrqReg  read (clear)
             _reg_read_resp(_FIFOLevelReg, 0x80),            # FIFOLevel  read (flush)
             _reg_read_resp(_BitFramingReg, 0x00),           # BitFraming read (| StartSend)
-            # After sleep:
             _reg_read_resp(_BitFramingReg, 0x80),           # BitFraming read (& clear)
             _reg_read_resp(_ComIrqReg,    0x20),            # RxIRq set → data received
             _reg_read_resp(_ErrorReg,     0x00),            # no errors
@@ -128,27 +115,9 @@ def _build_tag_with_spool_sequence(uid=(0xA3, 0xF2, 0x00, 0xCC), spool_id=1042):
             _reg_read_resp(_ControlReg,   0x00),            # last_bits = 0 → full bytes
         ] + [_reg_read_resp(_FIFODataReg, b) for b in fifo_data]
 
-    def crc_reads(crc_lo=0xAB, crc_hi=0xCD):
-        """Build reads for _calc_crc (just return dummy CRC bytes)."""
-        return [
-            _reg_read_resp(_FIFOLevelReg, 0x80),
-            _reg_read_resp(_CRCResultRegL, crc_lo),
-            _reg_read_resp(_CRCResultRegH, crc_hi),
-        ]
-
     responses = []
-    # Stage 1: REQA — expect 2-byte ATQA (16 bits)
-    responses += transceive_ok([0x00, 0x04])   # ATQA = 0x0400 (common value)
-    # Stage 2: ANTICOLL — 5 bytes: uid[0..3] + checksum
-    responses += transceive_ok(list(uid) + [chk])
-    # Stage 3: SELECT — CRC then transceive (SAK byte)
-    responses += crc_reads()
-    responses += transceive_ok([0x08])         # SAK = 0x08 (Mifare 1K)
-    # Stage 4: READ pages 4-7 — CRC + transceive for each page
-    for page_start in range(0, 16, 4):
-        responses += crc_reads()
-        responses += transceive_ok(spool_bytes[page_start:page_start + 4])
-
+    responses += transceive_ok([0x00, 0x04])          # REQA → 2-byte ATQA
+    responses += transceive_ok(list(uid) + [chk])     # ANTICOLL → uid + checksum
     return responses
 
 
@@ -182,57 +151,46 @@ def test_is_alive_returns_false_when_antenna_off():
     driver = RC522Driver(spi, gate=0)
     assert driver.is_alive() is False
 
-def test_no_tag_returns_none_none():
-    """When no tag is present (TimerIRq set), read_tag() returns (None, None)."""
-    # REQA transceive will see TimerIRq → MI_ERR → return None, None immediately
+def test_no_tag_returns_none():
+    """When no tag is present (TimerIRq set), read_tag() returns None."""
     responses = _build_no_tag_sequence()
     spi = MockSPI(transfer_responses=responses)
-    driver = RC522Driver(spi, gate=0, transceive_delay=0.0, crc_delay=0.0)
-    uid, spool = driver.read_tag()
-    assert uid is None
-    assert spool is None
+    driver = RC522Driver(spi, gate=0, transceive_delay=0.0)
+    result = driver.read_tag()
+    assert result is None
 
-def test_spool_id_ascii_parsed():
-    """Full happy-path: tag present, spool ID written as ASCII."""
-    responses = _build_tag_with_spool_sequence(
-        uid=(0xA3, 0xF2, 0x00, 0xCC), spool_id=1042)
-    # Add BitFramingReg reads needed between stages
+def test_tag_present_returns_uid():
+    """Full happy-path: REQA + ANTICOLL succeed → UID string returned."""
+    responses = _build_tag_sequence(uid=(0xA3, 0xF2, 0x00, 0xCC))
     spi = MockSPI(transfer_responses=responses)
-    driver = RC522Driver(spi, gate=0, transceive_delay=0.0, crc_delay=0.0)
-    uid, spool = driver.read_tag()
-    assert uid == 'A3F200CC', f"Expected 'A3F200CC', got {uid!r}"
-    assert spool == 1042,     f"Expected 1042, got {spool}"
+    driver = RC522Driver(spi, gate=0, transceive_delay=0.0)
+    result = driver.read_tag()
+    assert result == 'A3F200CC', f"Expected 'A3F200CC', got {result!r}"
 
-def test_max_spool_id_respected():
-    """Binary fallback value >= max_spool_id should be rejected."""
-    # Craft a 16-byte payload that is NOT valid ASCII digits but decodes as
-    # big-endian uint32 = 200000 (above default max of 100000)
-    high_val = 200000
-    b = [(high_val >> shift) & 0xFF for shift in (24, 16, 8, 0)]
-    page_bytes = b + [0x00] * 12  # 4 data bytes + 12 padding
+def test_anticoll_checksum_failure_returns_none():
+    """ANTICOLL response with bad XOR checksum → read_tag() returns None."""
+    uid = (0xA3, 0xF2, 0x00, 0xCC)
+    bad_chk = 0xFF  # intentionally wrong
 
-    spi = MockSPI()
-    driver = RC522Driver(spi, gate=0, max_spool_id=100000)
+    def transceive_ok(fifo_data):
+        return [
+            _reg_read_resp(_ComIrqReg,    0x7F),
+            _reg_read_resp(_ComIrqReg,    0xFF),
+            _reg_read_resp(_FIFOLevelReg, 0x80),
+            _reg_read_resp(_BitFramingReg, 0x00),
+            _reg_read_resp(_BitFramingReg, 0x80),
+            _reg_read_resp(_ComIrqReg,    0x20),
+            _reg_read_resp(_ErrorReg,     0x00),
+            _reg_read_resp(_FIFOLevelReg, len(fifo_data)),
+            _reg_read_resp(_ControlReg,   0x00),
+        ] + [_reg_read_resp(_FIFODataReg, b) for b in fifo_data]
 
-    # Call the spool-parsing logic directly via a white-box helper
-    all_data = bytearray(page_bytes)
-
-    spool_id = None
-    try:
-        text = bytes(all_data).decode('ascii').split('\x00')[0].strip()
-        if text and text.isdigit():
-            spool_id = int(text)
-    except Exception:
-        pass
-
-    if spool_id is None and len(all_data) >= 4:
-        val = (all_data[0] << 24 | all_data[1] << 16
-               | all_data[2] << 8  | all_data[3])
-        if 0 < val < driver._max_spool_id:
-            spool_id = val
-
-    assert spool_id is None, \
-        f"Expected spool_id=None (value too large), got {spool_id}"
+    responses  = transceive_ok([0x00, 0x04])                    # REQA OK
+    responses += transceive_ok(list(uid) + [bad_chk])           # ANTICOLL bad checksum
+    spi = MockSPI(transfer_responses=responses)
+    driver = RC522Driver(spi, gate=0, transceive_delay=0.0)
+    result = driver.read_tag()
+    assert result is None
 
 def test_write_uses_correct_spi_format():
     """_write() must set bit 7 = 0 in the address byte (write mode)."""

@@ -10,13 +10,16 @@ Run from the project root:
     python3 tests/simulate.py
 
 Commands (type 'help' at the prompt for the full list):
-    place <gate> <spool_id>     Simulate placing spool #spool_id on gate
-    place <gate> uid <uid_hex>  Simulate a tag with no spool ID written
-    remove <gate>               Simulate removing a tag (fires after threshold)
-    status                      Show current gate state
-    poll                        Manually trigger one poll cycle
-    set poll_interval <s>       Change poll interval
-    set absent_threshold <n>    Change debounce threshold
+    place <gate> <spool_id>        Simulate placing spool #spool_id on gate
+    place <gate> uid <uid_hex>     Simulate a tag with no spool ID written
+    place <gate> lookup <uid_hex>  Look up UID in Spoolman and place with resolved spool
+    remove <gate>                  Simulate removing a tag (fires after threshold)
+    status                         Show current gate state
+    poll                           Manually trigger one poll cycle
+    set poll_interval <s>          Change poll interval
+    set absent_threshold <n>       Change debounce threshold
+    set spoolman_url <url>         Change Spoolman base URL
+    set spoolman_rfid_key <key>    Change Spoolman RFID extra-field name
     quit
 """
 
@@ -29,6 +32,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__),
                                 '..', 'klippy', 'extras', 'nfc_gates'))
 
 from gate_state import GateState, EVENT_CHANGED, EVENT_UID_ONLY, EVENT_REMOVED
+from spoolman_client import SpoolmanClient
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -79,9 +83,14 @@ class Simulator:
 
     GATE_COUNT = 5
 
+    SPOOLMAN_URL     = 'http://192.168.0.73:7912'
+    SPOOLMAN_RFID_KEY = 'rfid_tag'
+
     def __init__(self):
-        self._poll_interval    = 30.0
-        self._absent_threshold = 3
+        self._poll_interval      = 30.0
+        self._absent_threshold   = 3
+        self._spoolman_url       = self.SPOOLMAN_URL
+        self._spoolman_rfid_key  = self.SPOOLMAN_RFID_KEY
         self._gates  = [SimulatedGate(i) for i in range(self.GATE_COUNT)]
         self._states = [GateState(i, self._absent_threshold)
                         for i in range(self.GATE_COUNT)]
@@ -137,6 +146,8 @@ class Simulator:
 
     def cmd_place(self, args):
         """place <gate> <spool_id>  |  place <gate> uid <uid_hex>"""
+        if args and args[0].lower() == 'gate':
+            args = args[1:]
         if len(args) < 2:
             print("Usage: place <gate> <spool_id>  or  place <gate> uid <uid_hex>")
             return
@@ -147,7 +158,19 @@ class Simulator:
         if gate < 0 or gate >= self.GATE_COUNT:
             print(f"gate must be 0–{self.GATE_COUNT - 1}"); return
 
-        if len(args) >= 3 and args[1].lower() == 'uid':
+        if len(args) >= 3 and args[1].lower() == 'lookup':
+            uid = args[2].upper()
+            print(f"  [SIM] Looking up UID {uid} in Spoolman ({self._spoolman_url}) ...")
+            client = SpoolmanClient(self._spoolman_url,
+                                    rfid_key=self._spoolman_rfid_key, debug=1)
+            spool_id = client.lookup_spool_by_uid(uid)
+            if spool_id is not None:
+                self._gates[gate].set_tag(uid, spool_id)
+                print(f"  [SIM] Gate {gate}: UID {uid} → spool {spool_id} placed")
+            else:
+                self._gates[gate].set_tag(uid, None)
+                print(f"  [SIM] Gate {gate}: UID {uid} not found in Spoolman — placed as uid-only")
+        elif len(args) >= 3 and args[1].lower() == 'uid':
             uid = args[2].upper()
             self._gates[gate].set_tag(uid, None)
             print(f"  [SIM] Gate {gate}: tag {uid} placed (no spool ID)")
@@ -217,6 +240,12 @@ class Simulator:
                 print(f"  [SIM] absent_threshold = {n}")
             except ValueError:
                 print("Value must be an integer")
+        elif key == 'spoolman_url':
+            self._spoolman_url = val
+            print(f"  [SIM] spoolman_url = {val}")
+        elif key == 'spoolman_rfid_key':
+            self._spoolman_rfid_key = val
+            print(f"  [SIM] spoolman_rfid_key = {val}")
         else:
             print(f"Unknown setting: {key}")
 
@@ -224,17 +253,20 @@ class Simulator:
         self.poll_once()
 
     def cmd_help(self, _args):
-        print("""
+        print(f"""
 Commands:
-  place <gate> <spool_id>       Simulate placing a spool on a gate
-  place <gate> uid <uid_hex>    Simulate a tag with no spool ID written
-  remove <gate>                 Simulate removing a tag (debounce auto-applied)
-  status                        Show hardware and tracked state of all gates
-  poll                          Manually run one poll cycle
-  set poll_interval <s>         Change poll interval (affects background thread)
-  set absent_threshold <n>      Change debounce threshold (gates adapt live)
-  help                          Show this message
-  quit / exit                   Stop the simulator
+  place <gate> <spool_id>          Simulate placing a spool on a gate
+  place <gate> uid <uid_hex>       Simulate a tag with no spool ID written
+  place <gate> lookup <uid_hex>    Look up UID in Spoolman and place with resolved spool
+  remove <gate>                    Simulate removing a tag (debounce auto-applied)
+  status                           Show hardware and tracked state of all gates
+  poll                             Manually run one poll cycle
+  set poll_interval <s>            Change poll interval (affects background thread)
+  set absent_threshold <n>         Change debounce threshold (gates adapt live)
+  set spoolman_url <url>           Change Spoolman URL (current: {self._spoolman_url})
+  set spoolman_rfid_key <key>      Change RFID extra-field name (current: {self._spoolman_rfid_key})
+  help                             Show this message
+  quit / exit                      Stop the simulator
 """)
 
 

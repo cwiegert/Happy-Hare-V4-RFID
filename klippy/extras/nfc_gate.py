@@ -69,10 +69,40 @@ from nfc_gates.klipper_interface import KlipperInterface
 from nfc_gates.spoolman_client   import SpoolmanClient
 
 
-# Module-level registry — each load_config() call appends its NfcGate instance.
+# Module-level registry — each load_config_prefix() call appends its NfcGate instance.
 # NFC_GATE_STATUS iterates this list; it is populated by Klipper's config phase
 # before any GCode command can be invoked.
 _instances = []
+
+
+class NfcGateDefaults:
+    """
+    Holds shared defaults from the optional [nfc_gate] base section.
+
+    Any key defined here can be omitted from individual [nfc_gate laneN]
+    sections — the lane will inherit this value.  A lane can override any
+    key by simply defining it locally.
+
+    The [nfc_gate] section is optional.  If it is absent, NfcGate falls
+    back to the same built-in defaults it has always used.
+    """
+
+    def __init__(self, config):
+        self.spoolman_url       = config.get('spoolman_url', '')
+        self.spoolman_rfid_key  = config.get('spoolman_rfid_key', 'rfid')
+        self.spoolman_timeout   = config.getfloat('spoolman_timeout', 5.0,
+                                                   minval=0.5, maxval=30.0)
+        self.spoolman_cache_ttl = config.getfloat('spoolman_cache_ttl', 300.0,
+                                                   minval=0., maxval=3600.)
+        self.poll_interval      = config.getfloat('poll_interval', 30.,
+                                                   minval=1., maxval=3600.)
+        self.absent_threshold   = config.getint('absent_threshold', 3,
+                                                 minval=1, maxval=255)
+        self.transceive_delay   = config.getfloat('transceive_delay', 0.250,
+                                                   minval=0.050, maxval=2.0)
+        self.crc_delay          = config.getfloat('crc_delay', 0.050,
+                                                   minval=0.005, maxval=1.0)
+        self.debug              = config.getint('debug', 1, minval=0, maxval=2)
 
 
 class NfcGate:
@@ -82,31 +112,42 @@ class NfcGate:
     Instantiated once per [nfc_gate laneN] config section.
     """
 
-    def __init__(self, config):
+    def __init__(self, config, defaults=None):
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
 
         # Section name suffix (e.g. "lane0" from "[nfc_gate lane0]")
         self._name = config.get_name().split()[-1]
 
-        # ── Config ───────────────────────────────────────────────────────────
-        self._gate = config.getint('gate', minval=0)
-        self._poll_interval    = config.getfloat('poll_interval', 30.,
+        # ── Config (lane overrides base defaults, base overrides built-ins) ──
+        d = defaults  # NfcGateDefaults or None
+        self._gate = config.getint('mmu_gate', minval=0)
+        self._poll_interval    = config.getfloat('poll_interval',
+                                                  d.poll_interval if d else 30.,
                                                   minval=1., maxval=3600.)
-        self._absent_threshold = config.getint('absent_threshold', 3,
+        self._absent_threshold = config.getint('absent_threshold',
+                                                d.absent_threshold if d else 3,
                                                 minval=1, maxval=255)
-        transceive_delay = config.getfloat('transceive_delay', 0.250,
+        transceive_delay = config.getfloat('transceive_delay',
+                                            d.transceive_delay if d else 0.250,
                                             minval=0.050, maxval=2.0)
-        crc_delay        = config.getfloat('crc_delay', 0.050,
+        crc_delay        = config.getfloat('crc_delay',
+                                            d.crc_delay if d else 0.050,
                                             minval=0.005, maxval=1.0)
-        self._debug      = config.getint('debug', 1, minval=0, maxval=2)
+        self._debug      = config.getint('debug',
+                                          d.debug if d else 1,
+                                          minval=0, maxval=2)
 
         # ── Spoolman integration ──────────────────────────────────────────────
-        spoolman_url     = config.get('spoolman_url', '')
-        spoolman_rfid_key = config.get('spoolman_rfid_key', 'rfid')
-        spoolman_timeout = config.getfloat('spoolman_timeout', 5.0,
-                                            minval=0.5, maxval=30.0)
-        spoolman_cache_ttl = config.getfloat('spoolman_cache_ttl', 300.0,
+        spoolman_url      = config.get('spoolman_url',
+                                       d.spoolman_url if d else '')
+        spoolman_rfid_key = config.get('spoolman_rfid_key',
+                                       d.spoolman_rfid_key if d else 'rfid')
+        spoolman_timeout  = config.getfloat('spoolman_timeout',
+                                             d.spoolman_timeout if d else 5.0,
+                                             minval=0.5, maxval=30.0)
+        spoolman_cache_ttl = config.getfloat('spoolman_cache_ttl',
+                                              d.spoolman_cache_ttl if d else 300.0,
                                               minval=0., maxval=3600.)
 
         if spoolman_url:
@@ -122,8 +163,8 @@ class NfcGate:
             self._spoolman = None
             logging.warning(
                 "nfc_gate: [%s] spoolman_url not set — gate will report UIDs "
-                "but cannot resolve spool IDs.  Add spoolman_url to [nfc_gate %s].",
-                self._name, self._name)
+                "but cannot resolve spool IDs.  Set spoolman_url in [nfc_gate] "
+                "or in [nfc_gate %s].", self._name, self._name)
 
         # ── I2C device ────────────────────────────────────────────────────────
         # MCU_I2C.lookup() reads i2c_mcu, i2c_software_scl_pin,
@@ -293,10 +334,18 @@ def _cmd_all_status(gcmd):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Entry point
+# Entry points
 # ─────────────────────────────────────────────────────────────────────────────
 
 def load_config(config):
-    gate = NfcGate(config)
+    # Handles [nfc_gate] — shared defaults only, no hardware.
+    # Optional: omit this section entirely to use built-in defaults.
+    return NfcGateDefaults(config)
+
+def load_config_prefix(config):
+    # Handles [nfc_gate lane0], [nfc_gate lane1], etc.
+    printer = config.get_printer()
+    defaults = printer.lookup_object('nfc_gate', None)  # None if no base section
+    gate = NfcGate(config, defaults)
     _instances.append(gate)
     return gate
