@@ -8,7 +8,7 @@
 #
 # Integration model
 # ─────────────────
-# This driver uses Approach B (UID lookup): it reads only the tag's factory
+# This driver uses UID lookup: it reads only the tag's factory
 # UID — the simplest possible NFC operation.  No data is ever written to the
 # tag.  The UID is passed up to the gate manager, which queries the Spoolman
 # API to resolve it to a spool ID.  Tags can be blank NTAG stickers straight
@@ -272,7 +272,7 @@ class PN532Driver:
             return False
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Tag read — UID only (Approach B)
+    # Tag read — UID only 
     # ─────────────────────────────────────────────────────────────────────────
 
     def read_tag(self):

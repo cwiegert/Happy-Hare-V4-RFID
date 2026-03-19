@@ -11,12 +11,39 @@ or without pytest:
 
 import sys
 import os
-# Point directly at the nfc_gates package directory so gate_state.py can be
-# imported without triggering __init__.py (which requires Klipper's extras.bus).
-sys.path.insert(0, os.path.join(os.path.dirname(__file__),
-                                '..', 'klippy', 'extras', 'nfc_gates'))
+import types
 
-from gate_state import GateState, EVENT_CHANGED, EVENT_UID_ONLY, EVENT_REMOVED
+# ── Stub Klipper and driver dependencies so manager.py can be imported ────────
+_EXTRAS = os.path.join(os.path.dirname(__file__), '..', 'klippy', 'extras')
+sys.path.insert(0, _EXTRAS)
+
+def _stub(name, **attrs):
+    m = types.ModuleType(name)
+    for k, v in attrs.items():
+        setattr(m, k, v)
+    sys.modules[name] = m
+    return m
+
+class _NullLogger:
+    def debug(self, *a, **k): pass
+    def info(self, *a, **k): pass
+    def warning(self, *a, **k): pass
+    def error(self, *a, **k): pass
+    def exception(self, *a, **k): pass
+
+_stub('extras')
+_stub('extras.bus')
+
+_nfc_pkg = _stub('nfc_gates')
+_nfc_pkg.__path__    = [os.path.join(_EXTRAS, 'nfc_gates')]
+_nfc_pkg.__package__ = 'nfc_gates'
+
+_stub('nfc_gates.log',           logger=_NullLogger(), configure=lambda p: None)
+_stub('nfc_gates.pn532_driver',  PN532Driver=object)
+_stub('nfc_gates.rc522_driver',  RC522Driver=object)
+_stub('nfc_gates.spoolman_client', SpoolmanClient=object)
+
+from nfc_gates.manager import GateState, EVENT_CHANGED, EVENT_UID_ONLY, EVENT_REMOVED
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -51,8 +78,8 @@ def test_spool_placed_emits_changed():
 
 def test_same_spool_stays_silent():
     gs = GateState(gate=0)
-    gs.process_read('A3F200CC', 1042)          # first detection
-    assert_silent(gs.process_read('A3F200CC', 1042))  # still there — no event
+    gs.process_read('A3F200CC', 1042)
+    assert_silent(gs.process_read('A3F200CC', 1042))
     assert_silent(gs.process_read('A3F200CC', 1042))
 
 def test_different_spool_same_uid_emits_changed():
@@ -92,7 +119,6 @@ def test_removal_clears_state():
     gs = GateState(gate=0, absent_threshold=1)
     gs.process_read('A3F200CC', 1042)
     gs.process_read(None, None)                  # removal
-    # Gate is empty — new tag should fire CHANGED again
     event = gs.process_read('B1D4A209', 207)
     assert_event(event, EVENT_CHANGED, uid='B1D4A209', spool=207)
 
@@ -102,7 +128,7 @@ def test_intermittent_miss_resets_counter():
     gs.process_read('A3F200CC', 1042)
     gs.process_read(None, None)   # miss 1
     gs.process_read(None, None)   # miss 2
-    gs.process_read('A3F200CC', 1042)  # tag back — counter resets, no removal
+    gs.process_read('A3F200CC', 1042)  # tag back — counter resets
     gs.process_read(None, None)   # miss 1 again
     assert_silent(gs.process_read(None, None))   # miss 2, still below threshold
 
@@ -111,7 +137,7 @@ def test_removal_only_fires_once():
     gs = GateState(gate=0, absent_threshold=1)
     gs.process_read('A3F200CC', 1042)
     gs.process_read(None, None)          # removal fires
-    assert_silent(gs.process_read(None, None))  # already empty
+    assert_silent(gs.process_read(None, None))
     assert_silent(gs.process_read(None, None))
 
 def test_gate_index_preserved_in_event():
@@ -123,7 +149,7 @@ def test_gate_index_preserved_in_event():
 def test_uid_only_to_spool_update():
     """Tag gains a spool ID between polls — should emit CHANGED."""
     gs = GateState(gate=0)
-    gs.process_read('A3F200CC', None)    # uid-only first
+    gs.process_read('A3F200CC', None)
     event = gs.process_read('A3F200CC', 1042)
     assert_event(event, EVENT_CHANGED, spool=1042)
 

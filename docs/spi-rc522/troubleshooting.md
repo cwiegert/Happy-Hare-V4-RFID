@@ -52,7 +52,7 @@ The tag is in the RF field and the UID is read, but pages 4–7 contain no parse
 
 - Write the spool ID with NFC Tools app: **Add record → Text** → enter the integer ID (e.g. `1042`). See [tag-writing.md](../shared/tag-writing.md).
 - If you used an NDEF URL or SmartPoster record type, overwrite with a plain Text record.
-- If the tag was written with binary encoding, it should be caught by the fallback uint32 parser — check klippy.log with `debug: 2` to see the raw bytes read from pages 4–7.
+- If the tag was written with binary encoding, it should be caught by the fallback uint32 parser — check `nfc_reader.log` with `debug: 2` to see the raw bytes read from pages 4–7.
 
 ---
 
@@ -76,7 +76,7 @@ When Klipper reconnects after a disconnect/restart, the RC522 readers are re-ini
 
 ## Polling thread stops logging
 
-If log output stops for more than 2× `poll_interval`, the background polling thread has likely raised an unhandled exception. Check klippy.log for:
+If log output stops for more than 2× `poll_interval`, the background polling thread has likely raised an unhandled exception. Check `nfc_reader.log` for:
 
 ```
 nfc_gates: unexpected error in poll cycle

@@ -27,12 +27,17 @@ import sys
 import os
 import threading
 import time
+import types
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__),
-                                '..', 'klippy', 'extras', 'nfc_gates'))
+# ── Stub Klipper-specific modules not needed by the simulator ─────────────────
+for _name in ('extras', 'extras.bus'):
+    sys.modules.setdefault(_name, types.ModuleType(_name))
 
-from gate_state import GateState, EVENT_CHANGED, EVENT_UID_ONLY, EVENT_REMOVED
-from spoolman_client import SpoolmanClient
+_EXTRAS = os.path.join(os.path.dirname(__file__), '..', 'klippy', 'extras')
+sys.path.insert(0, _EXTRAS)
+
+from nfc_gates.manager       import GateState, EVENT_CHANGED, EVENT_UID_ONLY, EVENT_REMOVED
+from nfc_gates.spoolman_client import SpoolmanClient
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -45,20 +50,20 @@ class FakeGCode:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Scriptable gate hardware — replaces RC522Driver
+# Scriptable gate hardware — replaces RC522Driver / PN532Driver
 # ─────────────────────────────────────────────────────────────────────────────
 
 class SimulatedGate:
     """
-    Simulates one RC522 reader.  Call set_tag() / clear_tag() from the
+    Simulates one NFC reader.  Call set_tag() / clear_tag() from the
     interactive prompt; read_tag() returns the currently configured state.
     """
 
     def __init__(self, gate):
-        self.gate     = gate
-        self._uid     = None     # str hex UID or None
-        self._spool   = None     # int or None
-        self._lock    = threading.Lock()
+        self.gate   = gate
+        self._uid   = None
+        self._spool = None
+        self._lock  = threading.Lock()
 
     def set_tag(self, uid, spool_id):
         with self._lock:
@@ -81,16 +86,15 @@ class SimulatedGate:
 
 class Simulator:
 
-    GATE_COUNT = 5
-
-    SPOOLMAN_URL     = 'http://192.168.0.73:7912'
+    GATE_COUNT        = 5
+    SPOOLMAN_URL      = 'http://192.168.0.73:7912'
     SPOOLMAN_RFID_KEY = 'rfid_tag'
 
     def __init__(self):
-        self._poll_interval      = 30.0
-        self._absent_threshold   = 3
-        self._spoolman_url       = self.SPOOLMAN_URL
-        self._spoolman_rfid_key  = self.SPOOLMAN_RFID_KEY
+        self._poll_interval     = 30.0
+        self._absent_threshold  = 3
+        self._spoolman_url      = self.SPOOLMAN_URL
+        self._spoolman_rfid_key = self.SPOOLMAN_RFID_KEY
         self._gates  = [SimulatedGate(i) for i in range(self.GATE_COUNT)]
         self._states = [GateState(i, self._absent_threshold)
                         for i in range(self.GATE_COUNT)]
@@ -98,8 +102,6 @@ class Simulator:
         self._stop   = threading.Event()
         self._thread = threading.Thread(target=self._poll_loop,
                                         name='sim-poll', daemon=True)
-
-    # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def start(self):
         print(f"Simulator started — {self.GATE_COUNT} gates, "
@@ -109,8 +111,6 @@ class Simulator:
 
     def stop(self):
         self._stop.set()
-
-    # ── Polling ───────────────────────────────────────────────────────────────
 
     def _poll_loop(self):
         while not self._stop.is_set():
@@ -125,11 +125,8 @@ class Simulator:
                 self._dispatch(event)
 
     def poll_once(self):
-        """Manually trigger a poll cycle (for testing without waiting)."""
         print("  [SIM] Poll cycle triggered")
         self._poll_all()
-
-    # ── Event dispatch ────────────────────────────────────────────────────────
 
     def _dispatch(self, event):
         event_type, gate, uid, spool = event
@@ -142,10 +139,7 @@ class Simulator:
         elif event_type == EVENT_REMOVED:
             self._gcode.run_script(f"_NFC_SPOOL_REMOVED GATE={gate}")
 
-    # ── Commands ──────────────────────────────────────────────────────────────
-
     def cmd_place(self, args):
-        """place <gate> <spool_id>  |  place <gate> uid <uid_hex>"""
         if args and args[0].lower() == 'gate':
             args = args[1:]
         if len(args) < 2:
@@ -161,15 +155,15 @@ class Simulator:
         if len(args) >= 3 and args[1].lower() == 'lookup':
             uid = args[2].upper()
             print(f"  [SIM] Looking up UID {uid} in Spoolman ({self._spoolman_url}) ...")
-            client = SpoolmanClient(self._spoolman_url,
-                                    rfid_key=self._spoolman_rfid_key, debug=1)
+            client   = SpoolmanClient(self._spoolman_url,
+                                      rfid_key=self._spoolman_rfid_key, debug=1)
             spool_id = client.lookup_spool_by_uid(uid)
             if spool_id is not None:
                 self._gates[gate].set_tag(uid, spool_id)
                 print(f"  [SIM] Gate {gate}: UID {uid} → spool {spool_id} placed")
             else:
                 self._gates[gate].set_tag(uid, None)
-                print(f"  [SIM] Gate {gate}: UID {uid} not found in Spoolman — placed as uid-only")
+                print(f"  [SIM] Gate {gate}: UID {uid} not found — placed as uid-only")
         elif len(args) >= 3 and args[1].lower() == 'uid':
             uid = args[2].upper()
             self._gates[gate].set_tag(uid, None)
@@ -179,15 +173,13 @@ class Simulator:
                 spool_id = int(args[1])
             except ValueError:
                 print("spool_id must be an integer"); return
-            uid = f"DEAD{gate:04X}"   # synthetic UID for simulation
+            uid = f"DEAD{gate:04X}"
             self._gates[gate].set_tag(uid, spool_id)
             print(f"  [SIM] Gate {gate}: spool {spool_id} placed (UID {uid})")
 
-        # Immediately run a poll so you see the event without waiting
         self.poll_once()
 
     def cmd_remove(self, args):
-        """remove <gate>"""
         if not args:
             print("Usage: remove <gate>"); return
         try:
@@ -200,19 +192,16 @@ class Simulator:
         self._gates[gate].clear_tag()
         print(f"  [SIM] Gate {gate}: tag removed "
               f"(REMOVED fires after {self._absent_threshold} more polls)")
-        # Trigger enough polls to clear the debounce
         for _ in range(self._absent_threshold):
             self.poll_once()
 
     def cmd_status(self, _args):
-        """Show current simulated gate state."""
         print(f"\nGate status (poll={self._poll_interval}s, "
               f"absent_threshold={self._absent_threshold}):")
         for i in range(self.GATE_COUNT):
             hw_uid, hw_spool = self._gates[i].read_tag()
             state = self._states[i]
-            hw = (f"hw=spool {hw_spool} UID {hw_uid}" if hw_uid
-                  else "hw=empty")
+            hw = (f"hw=spool {hw_spool} UID {hw_uid}" if hw_uid else "hw=empty")
             sw = (f"tracked=spool {state.current_spool} UID {state.current_uid}"
                   if state.current_uid else "tracked=empty")
             misses = f"  miss_count={state.miss_count}" if state.miss_count else ""
@@ -220,7 +209,6 @@ class Simulator:
         print()
 
     def cmd_set(self, args):
-        """set poll_interval <s>  |  set absent_threshold <n>"""
         if len(args) < 2:
             print("Usage: set poll_interval <s>  |  set absent_threshold <n>")
             return

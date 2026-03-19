@@ -117,33 +117,26 @@ Note the UUID — you will paste it into the config in the next step.
 
 ## Step 5 — Configure printer.cfg
 
-Copy all three config files to your Klipper config directory:
-
-```bash
-cp ~/emu-nfc-reader/config/nfc_macros.cfg           ~/printer_data/config/
-cp ~/emu-nfc-reader/config/nfc_vars.cfg              ~/printer_data/config/
-cp ~/emu-nfc-reader/config/nfc_gates_spi_rc522.cfg  ~/printer_data/config/
-```
-
-Add all three includes to `printer.cfg` **in this order**:
+`install.sh` already copied all config files to `~/printer_data/config/NFC/`.
+Add these includes to `printer.cfg` **in this order**:
 
 ```ini
-[include nfc_vars.cfg]
-[include nfc_macros.cfg]
-[include nfc_gates_spi_rc522.cfg]
+[include NFC/nfc_vars.cfg]
+[include NFC/nfc_macros.cfg]
+[include NFC/nfc_gates_spi_rc522.cfg]
 ```
 
-- **`nfc_vars.cfg`** is the one file you edit for your installation — set your Spoolman URL, poll interval, and debug level here. It must be included before the hardware config.
-- **`nfc_macros.cfg`** contains the Happy Hare integration macros and is shared between both hardware paths.
-- **`nfc_gates_spi_rc522.cfg`** contains only hardware-specific settings.
+- **`NFC/nfc_vars.cfg`** is the one file you edit — set your Spoolman URL, poll interval, and debug level here. It must be included before the hardware config.
+- **`NFC/nfc_macros.cfg`** contains the Happy Hare integration macros and is shared between all hardware paths.
+- **`NFC/nfc_gates_spi_rc522.cfg`** contains only hardware-specific settings.
 
-Edit `~/printer_data/config/nfc_vars.cfg` and `~/printer_data/config/nfc_gates_spi_rc522.cfg`:
+Edit these two files:
 
 | File | Key | What to do |
 |---|---|---|
-| `nfc_vars.cfg` | `spoolman_url` | Set to your Spoolman instance URL |
-| `nfc_gates_spi_rc522.cfg` | `canbus_uuid` | Replace `YOUR_UUID_HERE` with the UUID from Step 4 |
-| `nfc_gates_spi_rc522.cfg` | `extra_cs_pins` | Remove entries for gates you don't have wired |
+| `NFC/nfc_vars.cfg` | `spoolman_url` | Set to your Spoolman instance URL |
+| `NFC/nfc_gates_spi_rc522.cfg` | `canbus_uuid` | Replace `YOUR_UUID_HERE` with the UUID from Step 4 |
+| `NFC/nfc_gates_spi_rc522.cfg` | `extra_cs_pins` | Remove entries for gates you don't have wired |
 
 ---
 
@@ -178,10 +171,10 @@ Moonraker runs `install.sh` after each update to refresh the symlinks, then rest
 sudo systemctl restart klipper
 ```
 
-Check the log for successful initialisation:
+Check the NFC log for successful initialisation:
 
 ```bash
-tail -f ~/printer_data/logs/klippy.log | grep nfc_gates
+tail -f ~/printer_data/logs/nfc_reader.log
 ```
 
 Expected output:

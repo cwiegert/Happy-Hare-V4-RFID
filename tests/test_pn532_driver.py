@@ -17,14 +17,37 @@ or without pytest:
 import sys
 import os
 import time
+import types
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__),
-                                '..', 'klippy', 'extras', 'nfc_gates'))
+# ── Stub Klipper dependencies before importing the package ────────────────────
+_EXTRAS = os.path.join(os.path.dirname(__file__), '..', 'klippy', 'extras')
+sys.path.insert(0, _EXTRAS)
+
+def _stub(name, **attrs):
+    m = types.ModuleType(name)
+    for k, v in attrs.items():
+        setattr(m, k, v)
+    sys.modules[name] = m
+    return m
+
+class _NullLogger:
+    def debug(self, *a, **k): pass
+    def info(self, *a, **k): pass
+    def warning(self, *a, **k): pass
+    def error(self, *a, **k): pass
+    def exception(self, *a, **k): pass
+
+# nfc_gates.log must be stubbed before importing pn532_driver so the
+# relative import "from .log import logger" resolves to the stub.
+_nfc_pkg = _stub('nfc_gates')
+_nfc_pkg.__path__    = [os.path.join(_EXTRAS, 'nfc_gates')]
+_nfc_pkg.__package__ = 'nfc_gates'
+_stub('nfc_gates.log', logger=_NullLogger(), configure=lambda p: None)
 
 # Suppress time.sleep so _ACK_DELAY_S and configurable delays don't slow tests
 time.sleep = lambda _: None
 
-from pn532_driver import (
+from nfc_gates.pn532_driver import (
     PN532Driver,
     _CMD_SAMCONFIGURATION, _CMD_GETFIRMWAREVERSION,
     _CMD_INLISTPASSIVETARGET, _CMD_INRELEASE,
@@ -49,7 +72,7 @@ class MockI2C:
     """
 
     def __init__(self, read_responses=None):
-        self.writes    = []                          # list of byte-lists written
+        self.writes    = []
         self._responses = list(read_responses or [])
 
     def i2c_write(self, data):
@@ -59,18 +82,11 @@ class MockI2C:
         if self._responses:
             resp = self._responses.pop(0)
         else:
-            resp = [0x00] * read_len                # STATUS=0x00 = busy
+            resp = [0x00] * read_len   # STATUS=0x00 = busy
         return {'response': resp}
 
-    # ── Inspection helpers ────────────────────────────────────────────────────
-
     def wrote_cmd(self, cmd_byte):
-        """
-        Return True if any i2c_write() contained cmd_byte as the command
-        byte in a valid PN532 host-to-chip frame.
-
-        Frame layout written: [0x00, 0x00, 0xFF, LEN, LCS, TFI, CMD, ...]
-        """
+        """Return True if any i2c_write() contained cmd_byte in a valid frame."""
         for w in self.writes:
             if (len(w) > 6
                     and w[5] == _TFI_HOST_TO_PN532
@@ -84,12 +100,7 @@ class MockI2C:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _make_response(cmd_resp, payload=()):
-    """
-    Build a PN532→host response frame exactly as i2c_read() returns it.
-
-    Frame layout:
-      [STATUS=0x01, 0x00, 0x00, 0xFF, LEN, LCS, TFI=0xD5, CMD_RESP, *payload, DCS, 0x00]
-    """
+    """Build a PN532→host response frame as i2c_read() would return it."""
     data   = [_TFI_PN532_TO_HOST, cmd_resp] + list(payload)
     length = len(data)
     lcs    = (-length) & 0xFF
@@ -97,34 +108,17 @@ def _make_response(cmd_resp, payload=()):
     return [0x01, 0x00, 0x00, 0xFF, length, lcs] + data + [dcs, 0x00]
 
 
-def _sam_ok():
-    """SAMConfiguration ACK (CMD_RESP=0x15, no payload)."""
-    return _make_response(0x15)
-
-def _firmware_ok(ic=0x07, ver=1, rev=6, support=0x07):
-    """GetFirmwareVersion response (CMD_RESP=0x03)."""
-    return _make_response(0x03, [ic, ver, rev, support])
+def _sam_ok():       return _make_response(0x15)
+def _firmware_ok():  return _make_response(0x03, [0x07, 0x01, 0x06, 0x07])
+def _release_ok():   return _make_response(0x53, [0x00])
+def _busy():         return [0x00] * 32
 
 def _inlist_tag(uid=(0xA3, 0xF2, 0x00, 0xCC)):
-    """
-    InListPassiveTarget response with one tag detected.
-
-    Payload layout: [NbTg, Tg, ATQA(2), SAK, NFCIDLen, NFCID...]
-    """
     payload = [1, 1, 0x00, 0x04, 0x08, len(uid)] + list(uid)
     return _make_response(0x4B, payload)
 
 def _inlist_no_tag():
-    """InListPassiveTarget response with no tag (NbTg=0)."""
     return _make_response(0x4B, [0])
-
-def _release_ok():
-    """InRelease response (CMD_RESP=0x53, Status=0x00)."""
-    return _make_response(0x53, [0x00])
-
-def _busy():
-    """STATUS=0x00 (not ready) — treated as a frame error by the driver."""
-    return [0x00] * 32
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -152,8 +146,7 @@ def test_no_tag_returns_none():
     """InListPassiveTarget NbTg=0 → read_tag() returns None."""
     i2c = MockI2C(read_responses=[_inlist_no_tag()])
     driver = PN532Driver(i2c, gate=0, transceive_delay=0.0, crc_delay=0.0)
-    result = driver.read_tag()
-    assert result is None
+    assert driver.read_tag() is None
 
 def test_tag_present_returns_uid():
     """Happy path: 4-byte UID → correct uppercase hex string returned."""
@@ -164,7 +157,7 @@ def test_tag_present_returns_uid():
     assert result == 'A3F200CC', f"Expected 'A3F200CC', got {result!r}"
 
 def test_tag_7byte_uid():
-    """7-byte UID (NTAG216 / Ultralight-C) is returned as 14-char hex string."""
+    """7-byte UID (NTAG216) is returned as 14-char hex string."""
     uid = (0x04, 0xA2, 0x3B, 0xC1, 0xD4, 0x5E, 0x80)
     i2c = MockI2C(read_responses=[_inlist_tag(uid), _release_ok()])
     driver = PN532Driver(i2c, gate=0, transceive_delay=0.0, crc_delay=0.0)
@@ -192,7 +185,6 @@ def test_build_frame_structure():
     frame = PN532Driver._build_frame([_CMD_SAMCONFIGURATION, 0x01, 0x00, 0x00])
     assert frame[0] == 0x00 and frame[1] == 0x00 and frame[2] == 0xFF, \
         "Missing preamble / start code"
-    # LEN = TFI(1) + CMD(1) + params(3) = 5
     assert frame[3] == 5, f"LEN expected 5, got {frame[3]}"
     assert (frame[3] + frame[4]) & 0xFF == 0, "LCS checksum invalid"
     assert frame[5] == _TFI_HOST_TO_PN532, "TFI byte wrong"
@@ -200,21 +192,23 @@ def test_build_frame_structure():
 
 def test_check_frame_returns_payload():
     """Well-formed response frame → _check_frame returns payload bytes."""
+    driver  = PN532Driver(MockI2C(), gate=0, crc_delay=0.0)
     raw     = bytearray(_make_response(0x03, [0x07, 0x01, 0x06, 0x07]))
-    payload = PN532Driver._check_frame(raw, 0x03)
-    assert payload == [0x07, 0x01, 0x06, 0x07], \
-        f"Payload mismatch: {payload}"
+    payload = driver._check_frame(raw, 0x03)
+    assert payload == [0x07, 0x01, 0x06, 0x07], f"Payload mismatch: {payload}"
 
 def test_check_frame_rejects_not_ready():
     """STATUS=0x00 (busy) → _check_frame returns None."""
-    raw = bytearray(_make_response(0x15))
-    raw[0] = 0x00                               # force STATUS = not ready
-    assert PN532Driver._check_frame(raw, 0x15) is None
+    driver = PN532Driver(MockI2C(), gate=0, crc_delay=0.0)
+    raw    = bytearray(_make_response(0x15))
+    raw[0] = 0x00   # force STATUS = not ready
+    assert driver._check_frame(raw, 0x15) is None
 
 def test_check_frame_rejects_wrong_cmd():
     """Unexpected CMD_RESP byte → _check_frame returns None."""
-    raw = bytearray(_make_response(0x15))       # SAMConfiguration response
-    assert PN532Driver._check_frame(raw, 0x03) is None  # but we expect firmware
+    driver = PN532Driver(MockI2C(), gate=0, crc_delay=0.0)
+    raw    = bytearray(_make_response(0x15))   # SAMConfiguration response
+    assert driver._check_frame(raw, 0x03) is None  # but we expect firmware
 
 
 # ─────────────────────────────────────────────────────────────────────────────
