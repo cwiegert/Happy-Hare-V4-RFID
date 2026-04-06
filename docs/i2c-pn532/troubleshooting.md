@@ -65,7 +65,7 @@ If the BME280 stops responding:
 The PN532 read the UID successfully but pages 4–7 contain no recognisable spool ID.
 
 - Write the spool ID with NFC Tools: **Add record → Text** → enter the integer ID. See [tag-writing.md](../shared/tag-writing.md).
-- Enable `debug: 2` to see the raw bytes read from the tag in klippy.log.
+- Enable `debug: 2` to see the raw bytes read from the tag in `nfc_reader.log`.
 
 ---
 

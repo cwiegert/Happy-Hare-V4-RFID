@@ -47,18 +47,11 @@
 # not make a network request.  Set cache_ttl=0 to disable caching.
 
 import json
-import logging
 import time
 
 from .log import logger
 
-try:
-    # Python 3
-    import urllib.request as _urllib_request
-    import urllib.error   as _urllib_error
-except ImportError:
-    # Micropython / very old Python 2 — should not reach here in Klipper
-    raise ImportError("spoolman_client requires Python 3")
+from urllib.request import urlopen
 
 
 class SpoolmanClient:
@@ -143,17 +136,10 @@ class SpoolmanClient:
             logger.debug("spoolman: GET %s (looking for uid=%s, key=%s)",
                           url, uid_hex, self._rfid_key)
         try:
-            req = _urllib_request.Request(
-                url,
-                headers={'Accept': 'application/json',
-                         'User-Agent': 'klipper-nfc-gates/1.0'})
-            with _urllib_request.urlopen(req, timeout=self._timeout) as resp:
+            with urlopen(url, timeout=self._timeout) as resp:
                 spools = json.loads(resp.read().decode('utf-8'))
-        except _urllib_error.URLError as e:
-            logger.warning("spoolman: request failed (%s): %s", url, e)
-            return None
         except Exception as e:
-            logger.warning("spoolman: unexpected error querying %s: %s", url, e)
+            logger.warning("spoolman: request failed (%s): %s", url, e)
             return None
 
         if not isinstance(spools, list):
@@ -170,7 +156,6 @@ class SpoolmanClient:
                 continue
             stored_cleaned = str(stored_raw).strip('"\'')
             stored_norm = self._normalise_uid(stored_cleaned)
-  #          stored_norm = self._normalise_uid(str(stored_raw))
             if stored_norm == uid_norm:
                 raw_id = spool.get('id')
                 if raw_id is not None:

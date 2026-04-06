@@ -36,20 +36,25 @@ read, reduce `poll_interval` to `5` in the config and restart Klipper.
 
 ---
 
-## Klipper Log
+## NFC Log File
 
-All NFC events are written to `klippy.log`:
+All NFC events are written to a dedicated log — separate from `klippy.log` — so
+you can follow NFC activity without filtering noise from the rest of Klipper:
 
 ```bash
 # Follow live
-tail -f ~/printer_data/logs/klippy.log | grep nfc_gate
+tail -f ~/printer_data/logs/nfc_reader.log
 
-# Search for gate changes only
-grep "state change\|spool.*detected\|spool removed" ~/printer_data/logs/klippy.log
+# Search for gate state changes
+grep "state change\|CHANGED\|REMOVED" ~/printer_data/logs/nfc_reader.log
 
-# Show the last 100 NFC lines
-grep nfc_gate ~/printer_data/logs/klippy.log | tail -100
+# Show the last 100 lines
+tail -100 ~/printer_data/logs/nfc_reader.log
 ```
+
+The log file is created automatically on first Klipper start after installation.
+Its location is determined by Klipper's own log directory (`~/printer_data/logs/`
+on standard installs).
 
 ---
 

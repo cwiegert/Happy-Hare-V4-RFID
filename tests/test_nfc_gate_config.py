@@ -5,8 +5,7 @@ Unit tests for NfcGateDefaults — the [nfc_gate] base section handler.
 
 These tests exercise the config-reading layer without any Klipper runtime or
 hardware.  NfcGate itself is not tested here because it requires MCU_I2C.lookup()
-which pulls in the full Klipper bus stack; that path is covered by the
-integration simulator (tests/simulate.py).
+which pulls in the full Klipper bus stack.
 
 Run from the project root:
     python3 -m pytest tests/test_nfc_gate_config.py -v
@@ -18,36 +17,37 @@ import sys
 import os
 import types
 
-# Stub out Klipper's extras.bus and the nfc_gates sub-packages before importing
-# nfc_gate, so the module-level imports don't require a full Klipper install.
-def _stub_module(name):
-    mod = types.ModuleType(name)
-    sys.modules[name] = mod
-    return mod
+# ── Stub Klipper and driver dependencies so manager.py can be imported ────────
+_EXTRAS = os.path.join(os.path.dirname(__file__), '..', 'klippy', 'extras')
+sys.path.insert(0, _EXTRAS)
 
-_stub_module('extras')
-_stub_module('extras.bus')
-_stub_module('nfc_gates')
+def _stub(name, **attrs):
+    m = types.ModuleType(name)
+    for k, v in attrs.items():
+        setattr(m, k, v)
+    sys.modules[name] = m
+    return m
 
-_pn532 = _stub_module('nfc_gates.pn532_driver')
-_pn532.PN532Driver = object
+class _NullLogger:
+    def debug(self, *a, **k): pass
+    def info(self, *a, **k): pass
+    def warning(self, *a, **k): pass
+    def error(self, *a, **k): pass
+    def exception(self, *a, **k): pass
 
-_gs = _stub_module('nfc_gates.gate_state')
-_gs.GateState = object
-_gs.EVENT_CHANGED = 'changed'
-_gs.EVENT_UID_ONLY = 'uid_only'
-_gs.EVENT_REMOVED = 'removed'
+_stub('extras')
+_stub('extras.bus')
 
-_ki = _stub_module('nfc_gates.klipper_interface')
-_ki.KlipperInterface = object
+_nfc_pkg = _stub('nfc_gates')
+_nfc_pkg.__path__    = [os.path.join(_EXTRAS, 'nfc_gates')]
+_nfc_pkg.__package__ = 'nfc_gates'
 
-_sc = _stub_module('nfc_gates.spoolman_client')
-_sc.SpoolmanClient = object
+_stub('nfc_gates.log',            logger=_NullLogger(), configure=lambda p: None)
+_stub('nfc_gates.pn532_driver',   PN532Driver=object)
+_stub('nfc_gates.rc522_driver',   RC522Driver=object)
+_stub('nfc_gates.spoolman_client', SpoolmanClient=object)
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__),
-                                '..', 'klippy', 'extras'))
-
-from nfc_gate import NfcGateDefaults
+from nfc_gates.manager import NfcGateDefaults
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -59,8 +59,7 @@ class MockConfig:
     Lightweight stand-in for Klipper's ConfigWrapper.
 
     Supports the same get / getfloat / getint signatures used by
-    NfcGateDefaults, including minval / maxval validation (mirrors Klipper
-    behaviour so out-of-range values raise an exception in tests too).
+    NfcGateDefaults, including minval / maxval validation.
     """
 
     def __init__(self, values=None, name='nfc_gate'):
@@ -145,10 +144,9 @@ def test_defaults_partial_override():
         'spoolman_url': 'http://mainsailos.local:7912',
         'debug':        0,
     }))
-    assert d.spoolman_url  == 'http://mainsailos.local:7912'
-    assert d.debug         == 0
-    # Untouched keys remain at built-in defaults
-    assert d.poll_interval == 30.0
+    assert d.spoolman_url     == 'http://mainsailos.local:7912'
+    assert d.debug            == 0
+    assert d.poll_interval    == 30.0
     assert d.absent_threshold == 3
 
 
@@ -157,12 +155,11 @@ def test_defaults_partial_override():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_defaults_poll_interval_below_min_raises():
-    import traceback
     try:
         NfcGateDefaults(MockConfig({'poll_interval': 0.5}))
         assert False, "Expected ValueError for poll_interval below minval"
     except (ValueError, Exception):
-        pass  # correct
+        pass
 
 
 def test_defaults_debug_above_max_raises():

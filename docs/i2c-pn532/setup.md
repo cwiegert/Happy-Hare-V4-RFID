@@ -25,61 +25,31 @@ use the [SPI / RC522 path](../spi-rc522/setup.md) instead.
 
 ## Step 1 — Install from Git
 
-Clone the repository using sparse checkout so the `tests/` directory (development
-only) is not downloaded to the printer. Run the install script, which creates symlinks
-from the repo into Klipper's extras directory — future `git pull` updates take effect
-after a Klipper restart, with no re-install needed.
-
-```bash
-cd ~
-git clone --filter=blob:none --sparse YOUR_REPO_URL_HERE emu-nfc-reader
-cd ~/emu-nfc-reader
-git sparse-checkout set klippy config docs
-cd ~
-bash ~/emu-nfc-reader/install.sh
-```
-
-Verify the symlinks were created:
-
-```bash
-ls -la ~/klipper/klippy/extras/nfc_gates
-ls -la ~/klipper/klippy/extras/nfc_gate.py
-```
-
-Both should point back into `~/emu-nfc-reader/`.
-
----
+Follow the install instructions in the main readme
 
 ## Step 2 — Configure printer.cfg
 
-Copy all three config files to your Klipper config directory:
-
-```bash
-cp ~/emu-nfc-reader/config/nfc_macros.cfg          ~/printer_data/config/
-cp ~/emu-nfc-reader/config/nfc_vars.cfg             ~/printer_data/config/
-cp ~/emu-nfc-reader/config/nfc_gate_i2c_pn532.cfg  ~/printer_data/config/
-```
-
-Add all three includes to `printer.cfg` **in this order**:
+`install.sh` already copied all config files to `~/printer_data/config/NFC/`.
+Add these includes to `printer.cfg` **in this order**:
 
 ```ini
-[include nfc_vars.cfg]
-[include nfc_macros.cfg]
-[include nfc_gate_i2c_pn532.cfg]
+[include NFC/nfc_vars.cfg]
+[include NFC/nfc_macros.cfg]
+[include NFC/nfc_gate_i2c_pn532.cfg]
 ```
 
-- **`nfc_vars.cfg`** is the one file you edit for your installation — set your Spoolman URL, poll interval, and debug level here. It must be included before the hardware config.
-- **`nfc_macros.cfg`** contains the Happy Hare integration macros (`_NFC_SPOOL_CHANGED` etc.) and is shared between the SPI and I2C paths.
-- **`nfc_gate_i2c_pn532.cfg`** contains only hardware pin definitions — do not add user settings here.
+- **`NFC/nfc_vars.cfg`** is the one file you edit — set your Spoolman URL, poll interval, and debug level here. It must be included before the hardware config.
+- **`NFC/nfc_macros.cfg`** contains the Happy Hare integration macros (`_NFC_SPOOL_CHANGED` etc.) and is shared between all hardware paths.
+- **`NFC/nfc_gate_i2c_pn532.cfg`** contains only hardware pin definitions — do not add user settings here.
 
-> **Important:** Do **not** include `nfc_gates_spi_rc522.cfg` at the same time.
-> The two hardware paths are mutually exclusive — use one or the other.
+> **Important:** Include only one hardware config. The three hardware paths are
+> mutually exclusive — do not include more than one at the same time.
 
 ---
 
 ## Step 3 — Set Your Spoolman URL
 
-Open `~/printer_data/config/nfc_vars.cfg` and set your Spoolman instance URL:
+Open `~/printer_data/config/NFC/nfc_vars.cfg` and set your Spoolman instance URL:
 
 ```ini
 [nfc_gate]
@@ -94,7 +64,7 @@ for a description of every option.
 
 ## Step 4 — Adjust Gate Count
 
-Edit `~/printer_data/config/nfc_gate_i2c_pn532.cfg`.
+Edit `~/printer_data/config/NFC/nfc_gate_i2c_pn532.cfg`.
 
 By default the file has sections for `lane0` through `lane3` (4 gates), with `lane4`
 commented out. Add or remove `[nfc_gate laneN]` sections to match your physical gate
@@ -144,10 +114,10 @@ Updates will now appear in the Mainsail / Fluidd update panel alongside Klipper 
 sudo systemctl restart klipper
 ```
 
-Check the log for each gate:
+Check the NFC log for each gate:
 
 ```bash
-tail -f ~/printer_data/logs/klippy.log | grep nfc_gate
+tail -f ~/printer_data/logs/nfc_reader.log
 ```
 
 Expected output:
