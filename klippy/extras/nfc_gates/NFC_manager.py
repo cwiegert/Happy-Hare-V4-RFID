@@ -159,6 +159,8 @@ class NFCGateDefaults:
         self.crc_delay          = config.getfloat('crc_delay', 0.050,
                                                    minval=0.005, maxval=1.0)
         self.debug              = config.getint('debug', 1, minval=0, maxval=2)
+        self.i2c_address        = config.getint('i2c_address', 0x24,
+                                                 minval=0, maxval=127)
 
         log_file = config.get('log_file', '')
         if log_file:
@@ -215,8 +217,9 @@ class NFCGate:
                 "nfc_gate: [%s] spoolman_url not set — set spoolman_url in "
                 "[nfc_gate] or [nfc_gate %s].", self._name, self._name)
 
+        default_i2c_addr = d.i2c_address if d else 0x24
         i2c = bus_module.MCU_I2C_from_config(config,
-                                              default_addr=0x24,
+                                              default_addr=default_i2c_addr,
                                               default_speed=400000)
 
         self._reader     = PN532Driver(i2c, self._gate,
