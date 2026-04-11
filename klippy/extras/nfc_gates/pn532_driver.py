@@ -209,7 +209,7 @@ class PN532Driver:
         self._i2c.i2c_write(frame)
         time.sleep(_ACK_DELAY_S)
 
-    def def _recv(self, delay, expected_cmd_resp, read_len=_MAX_RESPONSE_BYTES):
+     def _recv(self, delay, expected_cmd_resp, read_len=_MAX_RESPONSE_BYTES):
         """
         Wait *delay* seconds then read a response frame from the PN532.
         Consumes the ACK frame before fetching the data frame.
