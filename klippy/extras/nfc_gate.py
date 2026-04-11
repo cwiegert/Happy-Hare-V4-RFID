@@ -14,15 +14,28 @@
 
 from nfc_gates.NFC_manager import NFCGate, NFCGateDefaults, _lane_instances
 
+# Tracks which printer object owns the current _lane_instances contents.
+# A new Printer is created on every Klipper RESTART, so when this changes
+# we know it's a fresh config load and must clear stale entries.
+_current_printer = None
+
 
 def load_config(config):
     # Handles the base [nfc_gate] section — shared defaults only, no hardware.
+    global _current_printer
+    _current_printer = config.get_printer()
+    del _lane_instances[:]
     return NFCGateDefaults(config)
 
 
 def load_config_prefix(config):
     # Handles [nfc_gate lane0], [nfc_gate lane1], etc.
+    global _current_printer
     printer  = config.get_printer()
+    if printer is not _current_printer:
+        # No base [nfc_gate] section — first lane triggers the reset.
+        _current_printer = printer
+        del _lane_instances[:]
     defaults = printer.lookup_object('nfc_gate', None)
     gate     = NFCGate(config, defaults)
     _lane_instances.append(gate)
