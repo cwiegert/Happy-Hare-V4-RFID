@@ -229,20 +229,66 @@ class PN532Driver:
     # Initialisation
     # ─────────────────────────────────────────────────────────────────────────
 
+    def _wake_pn532(self, attempts=5):
+        """
+        Wake the PN532 from power-save mode using GetFirmwareVersion.
+
+        Per datasheet: the first I2C transaction after power-on will NACK;
+        this is expected behaviour.  Retry until the chip ACKs or we exhaust
+        all attempts.
+
+        Returns True if the chip responded, False if all attempts failed.
+        """
+        for attempt in range(attempts):
+            try:
+                self._send([_CMD_GETFIRMWAREVERSION])
+                payload = self._recv(self._release_delay, 0x03, read_len=14)
+                if payload is not None and len(payload) >= 4:
+                    logger.info(
+                        "nfc_gates: gate %d (PN532) wake OK on attempt %d — "
+                        "IC=0x%02X Ver=%d.%d",
+                        self._gate, attempt + 1,
+                        payload[0], payload[1], payload[2])
+                    return True
+                # Got a frame but not a valid FW response — keep trying
+                if self._debug >= 2:
+                    logger.debug(
+                        "nfc_gates: gate %d (PN532) wake attempt %d — "
+                        "bad response, retrying", self._gate, attempt + 1)
+            except Exception as e:
+                # NACK on first transaction is expected — log at debug only
+                level = logger.debug if attempt == 0 else logger.info
+                level("nfc_gates: gate %d (PN532) wake attempt %d NACK "
+                      "(expected on first try): %s",
+                      self._gate, attempt + 1, e)
+            time.sleep(0.025)
+        logger.warning("nfc_gates: gate %d (PN532) failed to wake after "
+                        "%d attempts — check wiring and I2C address 0x%02X",
+                        self._gate, attempts, self._i2c.i2c_address
+                        if hasattr(self._i2c, 'i2c_address') else 0x24)
+        return False
+
     def init(self):
         """
-        Configure the PN532 for ISO14443A normal operation.
+        Wake the PN532 then configure it for ISO14443A normal operation.
 
-        Sends SAMConfiguration (Normal mode, no SAM timeout, no IRQ output).
-        Must be called once after klippy:connect, before the first read_tag().
+        Sends GetFirmwareVersion (with retries) to bring the chip out of
+        power-save, then SAMConfiguration (Normal mode, no SAM timeout,
+        no IRQ output).  Must be called once after klippy:connect.
+
+        Raises RuntimeError if the chip does not respond after retries.
         """
+        if not self._wake_pn532():
+            raise RuntimeError(
+                "PN532 gate %d did not respond — check wiring and I2C address"
+                % self._gate)
+
         # SAMConfiguration: Normal mode(0x01), timeout=0x00, IRQ=0x00
         self._send([_CMD_SAMCONFIGURATION, 0x01, 0x00, 0x00])
-        # Response CMD code for SAMConfiguration is 0x15
         payload = self._recv(self._release_delay, 0x15, read_len=12)
         if payload is None:
             logger.warning("nfc_gates: gate %d (PN532) SAMConfiguration "
-                            "no response — check wiring and I2C address",
+                            "no response — reader may be unstable",
                             self._gate)
         elif self._debug >= 2:
             logger.debug("nfc_gates: gate %d (PN532) SAMConfiguration OK",
@@ -250,22 +296,17 @@ class PN532Driver:
 
     def is_alive(self):
         """
-        Return True if the PN532 responds to GetFirmwareVersion.
-        Used during startup to verify each reader is wired correctly.
+        Return True if the PN532 has already responded during init().
+
+        After init() succeeds the chip is confirmed alive.  This method is
+        kept for API compatibility with RC522Driver — callers should call
+        init() first and check for RuntimeError rather than calling is_alive()
+        standalone.
         """
         try:
             self._send([_CMD_GETFIRMWAREVERSION])
-            # Response CMD code for GetFirmwareVersion is 0x03
-            # Response payload: [IC, Ver, Rev, Support] — 4 bytes
             payload = self._recv(self._release_delay, 0x03, read_len=14)
-            if payload is not None and len(payload) >= 4:
-                if self._debug >= 1:
-                    logger.info(
-                        "nfc_gates: gate %d (PN532) firmware IC=0x%02X "
-                        "Ver=%d.%d",
-                        self._gate, payload[0], payload[1], payload[2])
-                return True
-            return False
+            return payload is not None and len(payload) >= 4
         except Exception as e:
             logger.debug("nfc_gates: gate %d (PN532) is_alive error: %s",
                           self._gate, e)
@@ -290,17 +331,24 @@ class PN532Driver:
         None
             No tag in the RF field, or a communication error occurred.
         """
-        uid_hex, tg = self._list_passive_target()
-        if uid_hex is None:
+        try:
+            uid_hex, tg = self._list_passive_target()
+            if uid_hex is None:
+                return None
+
+            self._release_target()
+
+            if self._debug >= 2:
+                logger.debug("nfc_gates: gate %d (PN532) read_tag → uid=%s",
+                              self._gate, uid_hex)
+
+            return uid_hex
+        except Exception as e:
+            # Runtime NACKs (e.g. tag removed mid-scan) are non-fatal.
+            if self._debug >= 1:
+                logger.info("nfc_gates: gate %d (PN532) read_tag I2C error "
+                             "(tag removed mid-scan?): %s", self._gate, e)
             return None
-
-        self._release_target()
-
-        if self._debug >= 2:
-            logger.debug("nfc_gates: gate %d (PN532) read_tag → uid=%s",
-                          self._gate, uid_hex)
-
-        return uid_hex
 
     # ─────────────────────────────────────────────────────────────────────────
     # Internal helpers
