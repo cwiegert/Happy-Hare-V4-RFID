@@ -311,6 +311,10 @@ class NFCGate:
             "absent_threshold=%d, debug=%d",
             self._name, self._gate, self._poll_interval,
             self._absent_threshold, self._debug)
+        if self._debug >= 2:
+            logger.debug(
+                "nfc_gate: [%s] calling reader.init() — "
+                "wake + SAMConfiguration sequence starting", self._name)
         try:
             self._reader.init()
             if self._reader.is_alive():
@@ -324,7 +328,14 @@ class NFCGate:
             self._failed = True
             logger.error("nfc_gate: [%s] init error: %s", self._name, e)
 
-        if not self._failed:
+        if self._failed:
+            if self._debug >= 2:
+                logger.debug("nfc_gate: [%s] init failed — polling thread "
+                              "will NOT start", self._name)
+        else:
+            if self._debug >= 2:
+                logger.debug("nfc_gate: [%s] init OK — starting polling thread "
+                              "(interval=%.0fs)", self._name, self._poll_interval)
             self._stop_event.clear()
             if not self._thread.is_alive():
                 self._thread = threading.Thread(
@@ -334,32 +345,67 @@ class NFCGate:
                 self._thread.start()
 
     def _handle_disconnect(self):
+        if self._debug >= 2:
+            logger.debug("nfc_gate: [%s] disconnect — stopping polling thread",
+                          self._name)
         self._stop_event.set()
 
     def _poll_loop(self):
         logger.info("nfc_gate: [%s] polling thread started", self._name)
         while not self._stop_event.is_set():
+            if self._debug >= 2:
+                logger.debug("nfc_gate: [%s] poll cycle start — "
+                              "current state: uid=%s spool=%s misses=%d",
+                              self._name,
+                              self._state.current_uid or 'none',
+                              self._state.current_spool if self._state.current_spool is not None else 'none',
+                              self._state.miss_count)
             try:
                 self._poll()
             except Exception:
                 logger.exception("nfc_gate: [%s] poll error", self._name)
+            if self._debug >= 2:
+                logger.debug("nfc_gate: [%s] poll cycle done — "
+                              "sleeping %.0fs", self._name, self._poll_interval)
             self._stop_event.wait(timeout=self._poll_interval)
         logger.info("nfc_gate: [%s] polling thread stopped", self._name)
 
     def _poll(self):
         uid_hex = self._reader.read_tag()
 
-        if self._debug >= 1 and uid_hex is None:
-            logger.info("nfc_gate: [%s] gate %d — no tag (miss %d)",
-                         self._name, self._gate, self._state.miss_count + 1)
+        if uid_hex is None:
+            if self._debug >= 1:
+                logger.info("nfc_gate: [%s] gate %d — no tag (miss %d)",
+                             self._name, self._gate, self._state.miss_count + 1)
+        else:
+            if self._debug >= 2:
+                logger.debug("nfc_gate: [%s] gate %d — tag read uid=%s",
+                              self._name, self._gate, uid_hex)
 
         if uid_hex is not None:
             if uid_hex == self._state.current_uid:
                 spool_id = self._state.current_spool
+                if self._debug >= 2:
+                    logger.debug(
+                        "nfc_gate: [%s] gate %d — uid=%s already known, "
+                        "spool_id=%s (skipping Spoolman lookup)",
+                        self._name, self._gate, uid_hex, spool_id)
             elif self._spoolman is not None:
+                if self._debug >= 2:
+                    logger.debug(
+                        "nfc_gate: [%s] gate %d — new uid=%s, "
+                        "querying Spoolman", self._name, self._gate, uid_hex)
                 spool_id = self._spoolman.lookup_spool_by_uid(uid_hex)
+                if self._debug >= 2:
+                    logger.debug(
+                        "nfc_gate: [%s] gate %d — Spoolman returned spool_id=%s",
+                        self._name, self._gate, spool_id)
             else:
                 spool_id = None
+                if self._debug >= 2:
+                    logger.debug(
+                        "nfc_gate: [%s] gate %d — uid=%s, no Spoolman configured",
+                        self._name, self._gate, uid_hex)
         else:
             spool_id = None
 
@@ -369,7 +415,13 @@ class NFCGate:
             if self._debug >= 1:
                 logger.info("nfc_gate: [%s] gate %d — %s uid=%s spool=%s",
                              self._name, gate, event_type, uid, spool)
+            if self._debug >= 2:
+                logger.debug("nfc_gate: [%s] gate %d — dispatching GCode "
+                              "for event %s", self._name, gate, event_type)
             self._klipper.dispatch(event_type, gate, uid, spool)
+        elif self._debug >= 2:
+            logger.debug("nfc_gate: [%s] gate %d — no state change  "
+                          "state=%r", self._name, self._gate, self._state)
 
     def status_line(self):
         if self._failed:
