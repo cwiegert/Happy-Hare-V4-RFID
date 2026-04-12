@@ -20,8 +20,11 @@
 #   python3 pn532_scan.py [--bus N] [--address 0x24] [--debug] [--scan-bus]
 
 import argparse
+import json
 import sys
 import time
+
+from pathlib import Path
 
 try:
     from smbus2 import SMBus, i2c_msg
@@ -29,6 +32,18 @@ except ImportError:
     print("ERROR: smbus2 is not installed.")
     print("       Run:  sudo apt install python3-smbus2")
     sys.exit(1)
+
+SpoolmanClient = None
+for _client_dir in (
+        Path(__file__).resolve().parents[1] / 'klippy' / 'extras' / 'nfc_gates',
+        Path.cwd() / 'klippy' / 'extras' / 'nfc_gates'):
+    if (_client_dir / 'spoolman_client.py').exists():
+        sys.path.insert(0, str(_client_dir))
+        try:
+            from spoolman_client import SpoolmanClient
+        except ImportError:
+            SpoolmanClient = None
+        break
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PN532 frame constants
@@ -342,6 +357,96 @@ def print_tag_read(tag):
     print(f"  Raw payload:  hex={bytes_to_spaced_hex(tag['raw_payload'])}  ascii={bytes_to_ascii(tag['raw_payload'])}", flush=True)
 
 
+def ascii_text(value):
+    """Return a terminal-safe ASCII representation for scalar values."""
+    if value is True:
+        text = 'true'
+    elif value is False:
+        text = 'false'
+    elif value is None:
+        text = 'null'
+    else:
+        text = str(value)
+    return text.encode('ascii', 'backslashreplace').decode('ascii')
+
+
+def flatten_metadata(value, prefix='spool'):
+    """Yield flattened name/value pairs for nested dict/list metadata."""
+    if isinstance(value, dict):
+        for key in sorted(value):
+            name = f"{prefix}.{key}" if prefix else str(key)
+            yield from flatten_metadata(value[key], name)
+    elif isinstance(value, list):
+        if not value:
+            yield prefix, '[]'
+        else:
+            for index, item in enumerate(value):
+                yield from flatten_metadata(item, f"{prefix}.{index}")
+    elif isinstance(value, (str, int, float, bool)) or value is None:
+        yield prefix, ascii_text(value)
+    else:
+        yield prefix, ascii_text(json.dumps(value, sort_keys=True, ensure_ascii=True))
+
+
+def print_spoolman_lookup(uid_hex, spool, spoolman_url, rfid_key):
+    """Print a Spoolman lookup result as clean ASCII named value pairs."""
+    print("SPOOLMAN LOOKUP", flush=True)
+    print(f"  lookup.uid: {ascii_text(uid_hex)}", flush=True)
+    print(f"  lookup.url: {ascii_text(spoolman_url)}", flush=True)
+    print(f"  lookup.rfid_key: {ascii_text(rfid_key)}", flush=True)
+
+    if not spool:
+        print("  lookup.status: not_found", flush=True)
+        return
+
+    print("  lookup.status: found", flush=True)
+    for name, value in flatten_metadata(spool):
+        print(f"  {ascii_text(name)}: {ascii_text(value)}", flush=True)
+
+
+def read_config_value(paths, section_name, key):
+    """Read a simple Klipper-style key from config files."""
+    in_section = False
+    for path in paths:
+        try:
+            with open(path, 'r') as fh:
+                for raw_line in fh:
+                    line = raw_line.split('#', 1)[0].strip()
+                    if not line:
+                        continue
+                    if line.startswith('[') and line.endswith(']'):
+                        in_section = line[1:-1].strip() == section_name
+                        continue
+                    if not in_section or ':' not in line:
+                        continue
+                    found_key, value = line.split(':', 1)
+                    if found_key.strip() == key:
+                        return value.strip()
+        except OSError:
+            continue
+    return ''
+
+
+def spoolman_config_paths():
+    """Return likely nfc_vars.cfg locations for repo and installed use."""
+    script_path = Path(__file__).resolve()
+    return [
+        script_path.parents[1] / 'config' / 'nfc_vars.cfg',
+        Path.home() / 'printer_data' / 'config' / 'NFC' / 'nfc_vars.cfg',
+    ]
+
+
+def make_spoolman_client(url, rfid_key, timeout, cache_ttl, debug):
+    """Create a Spoolman client, or return None if lookup is not configured."""
+    if not url:
+        return None
+    if SpoolmanClient is None:
+        print("WARNING: Spoolman client could not be imported; lookup disabled")
+        return None
+    return SpoolmanClient(url, rfid_key=rfid_key, timeout=timeout,
+                          cache_ttl=cache_ttl, debug=2 if debug else 1)
+
+
 def pn532_release(bus, address, debug=False):
     """
     Send InRelease to deselect all targets.
@@ -421,6 +526,15 @@ POLL_INTERVAL = 5   # seconds between InListPassiveTarget scans
 
 
 def main():
+    config_paths = spoolman_config_paths()
+    default_spoolman_url = (
+        read_config_value(config_paths, 'nfc_gate', 'spoolman_url') or
+        read_config_value(config_paths, 'nfc_gates', 'spoolman_url'))
+    default_rfid_key = (
+        read_config_value(config_paths, 'nfc_gate', 'spoolman_rfid_key') or
+        read_config_value(config_paths, 'nfc_gates', 'spoolman_rfid_key') or
+        'rfid_tag')
+
     parser = argparse.ArgumentParser(description='PN532 I2C scanner for Raspberry Pi')
     parser.add_argument('--bus',      type=int,  default=1,
                         help='I2C bus number (default: 1 = /dev/i2c-1, GPIO2/3)')
@@ -432,6 +546,16 @@ def main():
                         help='Scan I2C bus for all responding devices then exit')
     parser.add_argument('--once',     action='store_true',
                         help='Exit after first tag read')
+    parser.add_argument('--spoolman-url', default=default_spoolman_url,
+                        help='Spoolman base URL (default: value from config/nfc_vars.cfg)')
+    parser.add_argument('--rfid-key', default=default_rfid_key,
+                        help='Spoolman extra-field key containing the UID')
+    parser.add_argument('--spoolman-timeout', type=float, default=5.0,
+                        help='Spoolman HTTP timeout in seconds')
+    parser.add_argument('--spoolman-cache-ttl', type=float, default=300.0,
+                        help='Seconds to cache successful Spoolman lookups')
+    parser.add_argument('--no-spoolman', action='store_true',
+                        help='Disable Spoolman lookup')
     args = parser.parse_args()
 
     address = int(args.address, 16) if args.address.startswith('0x') \
@@ -443,6 +567,19 @@ def main():
 
     print(f"PN532 scanner  bus={args.bus}  address=0x{address:02X}  "
           f"poll={POLL_INTERVAL}s  debug={args.debug}")
+    spoolman = None
+    if not args.no_spoolman:
+        spoolman = make_spoolman_client(args.spoolman_url, args.rfid_key,
+                                        args.spoolman_timeout,
+                                        args.spoolman_cache_ttl,
+                                        args.debug)
+        if spoolman:
+            print(f"Spoolman lookup  url={args.spoolman_url}  "
+                  f"rfid_key={args.rfid_key}")
+        else:
+            print("Spoolman lookup disabled (no URL configured)")
+    else:
+        print("Spoolman lookup disabled")
     print("Ctrl+C to stop\n")
 
     with SMBus(args.bus) as bus:
@@ -489,7 +626,12 @@ def main():
 
                 if tag:
                     pn532_release(bus, address, debug=args.debug)
+                    uid = bytes_to_hex(tag['uid'])
                     print_tag_read(tag)
+                    if spoolman:
+                        spool = spoolman.lookup_spool_record_by_uid(uid)
+                        print_spoolman_lookup(uid, spool, args.spoolman_url,
+                                              args.rfid_key)
                     pn532_flush(bus, address, duration=1.0, debug=args.debug)
                     tag_was_present = True
                     if args.once:

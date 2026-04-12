@@ -47,9 +47,13 @@
 # not make a network request.  Set cache_ttl=0 to disable caching.
 
 import json
+import logging
 import time
 
-from .log import logger
+try:
+    from .log import logger
+except ImportError:
+    logger = logging.getLogger('spoolman_client')
 
 from urllib.request import urlopen
 
@@ -137,6 +141,24 @@ class SpoolmanClient:
                 return spool
         return None
 
+    def _fetch_spool_detail(self, spool_id):
+        """Return the full single-spool record, or None on request failure."""
+        url = '{}/api/v1/spool/{}'.format(self._base_url, spool_id)
+        if self._debug >= 2:
+            logger.debug("spoolman: GET %s", url)
+        try:
+            with urlopen(url, timeout=self._timeout) as resp:
+                spool = json.loads(resp.read().decode('utf-8'))
+        except Exception as e:
+            logger.warning("spoolman: detail request failed (%s): %s", url, e)
+            return None
+
+        if not isinstance(spool, dict):
+            logger.warning("spoolman: unexpected detail response type %s from %s",
+                            type(spool).__name__, url)
+            return None
+        return spool
+
     def lookup_spool_record_by_uid(self, uid_hex):
         """
         Return the Spoolman spool record whose extra[rfid_key] matches uid_hex,
@@ -172,10 +194,14 @@ class SpoolmanClient:
 
         spool = self._find_spool_record_by_uid(spools, uid_hex)
         spool_id = spool.get('id') if spool else None
+        if spool_id is not None:
+            detail = self._fetch_spool_detail(spool_id)
+            if detail is not None:
+                spool = detail
 
         if self._debug >= 1:
             if spool_id is not None:
-                logger.info("spoolman: uid=%s → spool_id=%d", uid_hex, spool_id)
+                logger.info("spoolman: uid=%s → spool_id=%s", uid_hex, spool_id)
             else:
                 logger.info(
                     "spoolman: uid=%s not found in %d spool records "
