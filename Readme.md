@@ -110,7 +110,7 @@ The sparse clone skips the `tests/` directory (development only — not needed o
 
 ```bash
 cd ~
-git clone --filter=blob:none --sparse https://github.com/cwiegert/NFC-Reader.git emu-nfc-reader
+git clone --filter=blob:none --sparse git@github.com:cwiegert/NFC-Reader.git emu-nfc-reader
 cd ~/emu-nfc-reader
 git sparse-checkout set klippy config docs tools
 cd ~
