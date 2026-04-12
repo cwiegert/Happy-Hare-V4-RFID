@@ -1,128 +1,178 @@
 #!/usr/bin/env python3
-# tools/pn532_scan.py
+# pn532_scan.py
 #
-# Standalone PN532 scanner for Raspberry Pi.
-#
-# Reads the PN532 directly over native Linux I2C (smbus2) — no Klipper,
-# no MCU, no CAN bus required.  Useful for bench-testing a PN532 wired
-# directly to the Pi's GPIO I2C pins before integrating with Klipper.
+# Standalone PN532 I2C scanner for Raspberry Pi.
+# No Klipper, no MMU, no Spoolman — just the PN532.
 #
 # Wiring (Pi GPIO header):
-#   PN532 VCC  → Pin 1  (3.3V)
-#   PN532 GND  → Pin 6  (GND)
-#   PN532 SDA  → Pin 3  (GPIO2, I2C1 SDA)
-#   PN532 SCL  → Pin 5  (GPIO3, I2C1 SCL)
+#   PN532 VCC → Pin 1  (3.3V)
+#   PN532 GND → Pin 6  (GND)
+#   PN532 SDA → Pin 3  (GPIO2, I2C1 SDA)
+#   PN532 SCL → Pin 5  (GPIO3, I2C1 SCL)
 #
 # PN532 must be in I2C mode (DIP switch / solder jumper).
 #
 # Prerequisites:
-#   sudo apt install python3-smbus2    # or: pip3 install smbus2
+#   sudo apt install python3-smbus2
 #   sudo raspi-config → Interface Options → I2C → Enable
 #
 # Usage:
-#   python3 tools/pn532_scan.py [--bus N] [--address 0x24] [--debug]
-#
-# Examples:
-#   python3 tools/pn532_scan.py
-#   python3 tools/pn532_scan.py --bus 1 --address 0x24 --debug
-#   python3 tools/pn532_scan.py --scan-bus        # scan I2C bus for any devices
-# =============================================================================
+#   python3 pn532_scan.py [--bus N] [--address 0x24] [--debug] [--scan-bus]
 
 import argparse
-import logging
-import os
 import sys
 import time
 
-# ── smbus2 import with friendly error ────────────────────────────────────────
 try:
     from smbus2 import SMBus, i2c_msg
 except ImportError:
     print("ERROR: smbus2 is not installed.")
     print("       Run:  sudo apt install python3-smbus2")
-    print("         or: pip3 install smbus2")
     sys.exit(1)
 
-# ── Add the klippy extras package to sys.path so we can import pn532_driver ──
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(_REPO_ROOT, 'klippy', 'extras'))
+# ─────────────────────────────────────────────────────────────────────────────
+# PN532 constants
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ── Set up a stdout logger that satisfies pn532_driver's `from .log import logger` ──
-# We monkey-patch the log module before importing pn532_driver so the driver's
-# logger points at our stdout handler.
-import types
+_TFI_HOST  = 0xD4
+_TFI_PN532 = 0xD5
 
-_stdout_logger = logging.getLogger('pn532_scan')
-_stdout_logger.setLevel(logging.DEBUG)
-if not _stdout_logger.handlers:
-    _h = logging.StreamHandler(sys.stdout)
-    _h.setFormatter(logging.Formatter('%(asctime)s %(levelname)-8s %(message)s',
-                                      datefmt='%H:%M:%S'))
-    _stdout_logger.addHandler(_h)
+_CMD_GETFIRMWAREVERSION  = 0x02
+_CMD_SAMCONFIGURATION    = 0x14
+_CMD_INLISTPASSIVETARGET = 0x4A
+_CMD_INRELEASE           = 0x52
 
-# Inject a fake nfc_gates package with a log module so pn532_driver's
-# relative import (from .log import logger) resolves correctly.
-_nfc_gates_pkg = types.ModuleType('nfc_gates')
-_nfc_gates_pkg.__path__ = [os.path.join(_REPO_ROOT, 'klippy', 'extras', 'nfc_gates')]
-_nfc_gates_pkg.__package__ = 'nfc_gates'
-sys.modules['nfc_gates'] = _nfc_gates_pkg
-
-_log_mod = types.ModuleType('nfc_gates.log')
-_log_mod.logger = _stdout_logger
-_log_mod.configure = lambda path: None
-sys.modules['nfc_gates.log'] = _log_mod
-
-# Now import the real driver
-from nfc_gates.pn532_driver import PN532Driver  # noqa: E402
+_MAX_RESPONSE = 32
 
 
-# =============================================================================
-# NativeI2C — drop-in replacement for Klipper's MCU_I2C using smbus2
-# =============================================================================
+# ─────────────────────────────────────────────────────────────────────────────
+# I2C helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
-class NativeI2C:
-    """
-    Wraps smbus2 raw I2C messages to mimic Klipper's MCU_I2C interface.
-
-    MCU_I2C methods used by PN532Driver:
-        i2c_write(data)           — write bytes with no preceding register byte
-        i2c_read(write, read_len) — optional preceding write, then read N bytes
-                                    returns {'response': bytes}
-    Both use raw i2c_msg transactions so no register/command byte is prepended
-    by the transport layer — the PN532 frame is sent exactly as built.
-    """
-
-    def __init__(self, bus_num, address):
-        self._bus_num  = bus_num
-        self._address  = address
-        self.i2c_address = address
-        self._bus      = SMBus(bus_num)
-
-    def i2c_write(self, data):
-        msg = i2c_msg.write(self._address, data)
-        self._bus.i2c_rdwr(msg)
-
-    def i2c_read(self, write, read_len):
-        if write:
-            wr_msg = i2c_msg.write(self._address, write)
-            rd_msg = i2c_msg.read(self._address, read_len)
-            self._bus.i2c_rdwr(wr_msg, rd_msg)
-        else:
-            rd_msg = i2c_msg.read(self._address, read_len)
-            self._bus.i2c_rdwr(rd_msg)
-        return {'response': bytes(rd_msg)}
-
-    def close(self):
-        self._bus.close()
+def _build_frame(cmd_and_params):
+    data   = [_TFI_HOST] + list(cmd_and_params)
+    length = len(data)
+    lcs    = (-length) & 0xFF
+    dcs    = (-sum(data)) & 0xFF
+    return [0x00, 0x00, 0xFF, length, lcs] + data + [dcs, 0x00]
 
 
-# =============================================================================
-# Bus scan helper
-# =============================================================================
+def _check_frame(raw, expected_cmd_resp):
+    if len(raw) < 8:
+        return None
+    if raw[0] != 0x01:
+        return None
+    if raw[1] != 0x00 or raw[2] != 0x00 or raw[3] != 0xFF:
+        return None
+    if raw[6] != _TFI_PN532:
+        return None
+    if raw[7] != expected_cmd_resp:
+        return None
+    length  = raw[4]
+    payload = list(raw[8: 8 + length - 2])
+    return payload
+
+
+def i2c_write(bus, address, data):
+    msg = i2c_msg.write(address, data)
+    bus.i2c_rdwr(msg)
+
+
+def i2c_read(bus, address, read_len):
+    msg = i2c_msg.read(address, read_len)
+    bus.i2c_rdwr(msg)
+    return bytes(msg)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PN532 protocol
+# ─────────────────────────────────────────────────────────────────────────────
+
+def pn532_send(bus, address, cmd_and_params, debug):
+    frame = _build_frame(cmd_and_params)
+    if debug:
+        print(f"  TX  cmd=0x{cmd_and_params[0]:02X}  frame={' '.join('%02X' % b for b in frame)}")
+    i2c_write(bus, address, frame)
+
+
+def pn532_recv(bus, address, expected_cmd_resp, read_len=_MAX_RESPONSE,
+               timeout=1.0, poll_interval=0.005, debug=False):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        raw1 = i2c_read(bus, address, 1)
+        status = raw1[0] if raw1 else 0xFF
+        if debug:
+            print(f"  poll  status=0x{status:02X}")
+        if status == 0x01:
+            raw = i2c_read(bus, address, read_len)
+            payload = _check_frame(bytearray(raw), expected_cmd_resp)
+            if debug:
+                print(f"  RX    raw={' '.join('%02X' % b for b in raw)}")
+                if payload is not None:
+                    print(f"  payload={' '.join('%02X' % b for b in payload)}")
+                else:
+                    print(f"  frame parse failed (expected cmd=0x{expected_cmd_resp:02X})")
+            return payload
+        time.sleep(poll_interval)
+    if debug:
+        print(f"  timeout waiting for ready")
+    return None
+
+
+def pn532_init(bus, address, debug):
+    """Wake the PN532 and send SAMConfiguration. Returns True on success."""
+    for attempt in range(3):
+        wait = 0.150 if attempt == 0 else 0.075
+        if debug:
+            print(f"Wake attempt {attempt+1}/3 (wait={wait*1000:.0f}ms)")
+        try:
+            pn532_send(bus, address, [_CMD_GETFIRMWAREVERSION], debug)
+            time.sleep(wait)
+            payload = pn532_recv(bus, address, 0x03, read_len=15,
+                                 timeout=0.500, debug=debug)
+            if payload and len(payload) >= 4:
+                print(f"  PN532 OK — IC=0x{payload[0]:02X} Ver={payload[1]}.{payload[2]}")
+                break
+        except Exception as e:
+            print(f"  attempt {attempt+1} failed: {e}")
+        time.sleep(0.050)
+    else:
+        return False
+
+    # SAMConfiguration: Normal mode, no timeout, no IRQ
+    pn532_send(bus, address, [_CMD_SAMCONFIGURATION, 0x01, 0x00, 0x00], debug)
+    pn532_recv(bus, address, 0x15, read_len=12, timeout=0.200, debug=debug)
+    return True
+
+
+def pn532_read_tag(bus, address, scan_timeout=0.350, debug=False):
+    """Return UID hex string if a tag is present, else None."""
+    pn532_send(bus, address, [_CMD_INLISTPASSIVETARGET, 0x01, 0x00], debug)
+    payload = pn532_recv(bus, address, 0x4B, read_len=_MAX_RESPONSE,
+                         timeout=scan_timeout + 0.100, debug=debug)
+    if not payload or payload[0] == 0:
+        return None
+    if len(payload) < 7:
+        return None
+    nfcid_len = payload[5]
+    if nfcid_len == 0 or len(payload) < 6 + nfcid_len:
+        return None
+    uid = payload[6:6 + nfcid_len]
+    uid_hex = ''.join('{:02X}'.format(b) for b in uid)
+
+    # Release target
+    pn532_send(bus, address, [_CMD_INRELEASE, 0x00], debug)
+    pn532_recv(bus, address, 0x53, read_len=12, timeout=0.200, debug=debug)
+
+    return uid_hex
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bus scan
+# ─────────────────────────────────────────────────────────────────────────────
 
 def scan_bus(bus_num):
-    """Probe every valid I2C address and print the ones that respond."""
-    print(f"Scanning I2C bus {bus_num} for devices...")
+    print(f"Scanning I2C bus {bus_num}...")
     found = []
     with SMBus(bus_num) as bus:
         for addr in range(0x03, 0x78):
@@ -137,77 +187,55 @@ def scan_bus(bus_num):
         print("  No devices found.")
     else:
         print(f"\n{len(found)} device(s) found.")
-    return found
 
 
-# =============================================================================
+# ─────────────────────────────────────────────────────────────────────────────
 # Main
-# =============================================================================
+# ─────────────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(
-        description='Scan for NFC tags using a PN532 on the Raspberry Pi I2C bus.')
-    parser.add_argument('--bus',     type=int,  default=1,
-                        help='I2C bus number (default: 1 = /dev/i2c-1, GPIO2/3)')
-    parser.add_argument('--address', default='0x24',
-                        help='PN532 I2C address in hex (default: 0x24)')
-    parser.add_argument('--debug',   action='store_true',
-                        help='Enable verbose PN532 protocol trace (debug=2)')
-    parser.add_argument('--scan-bus', action='store_true',
-                        help='Scan the I2C bus for all responding devices and exit')
-    parser.add_argument('--poll',    type=float, default=2.0,
-                        help='Polling interval in seconds (default: 2.0)')
-    parser.add_argument('--once',    action='store_true',
-                        help='Read one tag then exit (default: poll continuously)')
+    parser = argparse.ArgumentParser(description='PN532 I2C scanner for Raspberry Pi')
+    parser.add_argument('--bus',      type=int,   default=1,      help='I2C bus (default: 1)')
+    parser.add_argument('--address',  default='0x24',             help='PN532 address (default: 0x24)')
+    parser.add_argument('--poll',     type=float, default=2.0,    help='Poll interval seconds (default: 2.0)')
+    parser.add_argument('--debug',    action='store_true',        help='Show full I2C trace')
+    parser.add_argument('--scan-bus', action='store_true',        help='Scan bus for devices and exit')
+    parser.add_argument('--once',     action='store_true',        help='Exit after first tag read')
     args = parser.parse_args()
 
-    address = int(args.address, 16) if args.address.startswith('0x') \
-              else int(args.address)
+    address = int(args.address, 16) if args.address.startswith('0x') else int(args.address)
 
     if args.scan_bus:
         scan_bus(args.bus)
         return
 
-    debug_level = 2 if args.debug else 1
+    print(f"PN532 scanner  bus={args.bus}  address=0x{address:02X}  poll={args.poll}s")
+    print("Ctrl+C to stop\n")
 
-    print(f"PN532 scanner — I2C bus {args.bus}, address 0x{address:02X}")
-    print(f"Poll interval: {args.poll}s   Debug: {debug_level}")
-    print("Press Ctrl+C to stop.\n")
-
-    i2c = NativeI2C(args.bus, address)
-    driver = PN532Driver(i2c, gate=0, debug=debug_level)
-
-    try:
+    with SMBus(args.bus) as bus:
         print("Initialising PN532...")
-        driver.init()
-        print("PN532 ready.\n")
-    except RuntimeError as e:
-        print(f"\nERROR: {e}")
-        print("\nTroubleshooting:")
-        print(f"  1. Run with --scan-bus to confirm the device is visible on bus {args.bus}")
-        print("  2. Check PN532 is in I2C mode (DIP switch / solder jumper)")
-        print("  3. Check SDA→GPIO2 (Pin 3), SCL→GPIO3 (Pin 5), 3.3V, GND")
-        print("  4. Confirm I2C is enabled: sudo raspi-config → Interface Options → I2C")
-        i2c.close()
-        sys.exit(1)
+        if not pn532_init(bus, address, args.debug):
+            print("\nERROR: PN532 did not respond.")
+            print(f"  Run with --scan-bus to check bus {args.bus}")
+            print("  Check I2C mode jumper, wiring, and 3.3V power")
+            sys.exit(1)
+        print("Ready.\n")
 
-    last_uid = None
-    try:
-        while True:
-            uid = driver.read_tag()
-            if uid and uid != last_uid:
-                print(f"TAG DETECTED  UID={uid}")
-                last_uid = uid
-                if args.once:
-                    break
-            elif not uid and last_uid:
-                print("Tag removed.")
-                last_uid = None
-            time.sleep(args.poll)
-    except KeyboardInterrupt:
-        print("\nStopped.")
-    finally:
-        i2c.close()
+        last_uid = None
+        try:
+            while True:
+                uid = pn532_read_tag(bus, address, debug=args.debug)
+                if uid and uid != last_uid:
+                    print(f"TAG  {uid}")
+                    last_uid = uid
+                    if args.once:
+                        break
+                elif not uid and last_uid:
+                    print("removed")
+                    last_uid = None
+                time.sleep(args.poll)
+        except KeyboardInterrupt:
+            print("\nStopped.")
 
 
 if __name__ == '__main__':
