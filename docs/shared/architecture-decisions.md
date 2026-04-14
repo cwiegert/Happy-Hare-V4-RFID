@@ -60,7 +60,7 @@ NFC_Manager → _NFC_SPOOL_CHANGED GATE=n SPOOL_ID=id UID=uid
            → _NFC_SPOOL_REMOVED  GATE=n
            → _NFC_TAG_NO_SPOOL   GATE=n UID=uid
 
-nfc_macros.cfg → MMU_GATE_MAP GATE={gate} SPOOLID={spool_id} SYNC=1 QUIET=1
+nfc_macros.cfg → MMU_GATE_MAP GATE={gate} SPOOLID={spool_id} AVAILABLE=1 SYNC=1 QUIET=1
 ```
 
 **Why:** Happy Hare's GCode API evolves between versions. The exact command for "tell Happy Hare about this spool" belongs in editable GCode config, not Python. The default macro is designed for Happy Hare `spoolman_support: push`: `MMU_GATE_MAP` sets the local runtime gate map and `SYNC=1` lets Happy Hare synchronize that local map to Spoolman. NFC_Manager already knows the physical gate that produced the read, so it passes both `GATE` and `SPOOL_ID` into the macro boundary.

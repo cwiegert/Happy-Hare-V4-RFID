@@ -1,58 +1,17 @@
-# PN532 I2C Setup
+# First-Time Setup
 
-[← Back to README](../../Readme.md) | [Wiring →](wiring.md)
+[← Install](../shared/install-uninstall.md) | [Spoolman Setup →](../shared/spoolman-integration.md)
 
-This guide covers first-time setup of the supported path:
+This guide assumes you have:
+- [Wired the PN532](wiring.md) readers and set them to I2C mode
+- [Installed the software](../shared/install-uninstall.md)
+- Rebuilt and flashed Klipper firmware on every lane MCU
 
-```
-one PN532 per lane MCU / EBB42  →  Klipper I2C  →  NFC_Manager  →  Spoolman  →  Happy Hare
-```
-
----
-
-> [!CAUTION]
-> ## 🔴 Flash Klipper Firmware on Every Lane MCU First
->
-> Before you configure or test anything, update and flash Klipper firmware on every EBB42 / lane MCU that will carry a PN532. The PN532 driver depends on Klipper MCU I2C behaviour — not just the host-side Python. Stale MCU firmware produces failures that look like hardware problems:
->
-> - ACK reads fail immediately after the ready byte succeeds
-> - `Unable to obtain 'i2c_read_response' response` errors in Klipper logs
-> - BME280 on the same bus starts timing out after PN532 is wired
-> - Hardware I2C hangs while software I2C returns partial data
->
-> **Build and flash each lane MCU before debugging PN532 behaviour.**
+If you skipped any of those, do them first.
 
 ---
 
-## Prerequisites
-
-Before starting:
-
-- [ ] Happy Hare is installed and `[mcu lane0]`, `[mcu lane1]` etc. exist in Klipper config.
-- [ ] Each lane MCU is on the CAN bus and connecting cleanly on Klipper startup.
-- [ ] PN532 modules are wired and set to I2C mode — see [Wiring](wiring.md).
-- [ ] Lane MCU / EBB42 firmware has been rebuilt and flashed.
-- [ ] A Spoolman instance is reachable from the Pi.
-
----
-
-## Step 1 — Install
-
-If you have not already installed, follow [Install & Uninstall](../shared/install-uninstall.md).
-
-Quick reference:
-
-```bash
-cd ~
-git clone --filter=blob:none --sparse git@github.com:<your-github-username>/NFC-Reader.git emu-nfc-reader
-cd ~/emu-nfc-reader
-git sparse-checkout set klippy config docs tools
-bash install.sh
-```
-
----
-
-## Step 2 — Add Includes to `printer.cfg`
+## Step 1 — Add Includes to `printer.cfg`
 
 Add these three lines in this exact order:
 
@@ -62,15 +21,13 @@ Add these three lines in this exact order:
 [include NFC/pn532_i2C.cfg]
 ```
 
-**Order is required.** `nfc_vars.cfg` defines the base `[nfc_gate]` section. Each `[nfc_gate laneN]` section in `pn532_i2C.cfg` inherits from it. Including the lane file before the base section is defined will cause a Klipper config error.
+`nfc_vars.cfg` must come first — it defines the base `[nfc_gate]` section that each `[nfc_gate laneN]` in `pn532_i2C.cfg` inherits from. Reversing the order causes a Klipper config error on startup.
 
 ---
 
-## Step 3 — Configure Spoolman
+## Step 2 — Configure Spoolman
 
-Edit `~/printer_data/config/NFC/nfc_vars.cfg`.
-
-The minimum required settings:
+Edit `~/printer_data/config/NFC/nfc_vars.cfg`:
 
 ```ini
 [nfc_gate]
@@ -78,74 +35,78 @@ spoolman_url:      auto
 spoolman_rfid_key: rfid_tag
 ```
 
-| Setting | Value | Notes |
+| Setting | Value | When to use |
 |---|---|---|
-| `spoolman_url` | `auto` | Moonraker reads the Spoolman URL from its own config. Use this when Moonraker has a `[spoolman]` section. |
-| `spoolman_url` | `http://host:7912` | Direct URL. Use when testing, or when Moonraker does not expose the Spoolman URL. |
-| `spoolman_rfid_key` | `rfid_tag` | Must match the extra field name you created in Spoolman. |
+| `spoolman_url: auto` | Reads URL from Moonraker | Use this when `moonraker.conf` has a `[spoolman]` section |
+| `spoolman_url: http://host:7912` | Direct URL | Use when testing, or if `auto` isn't working |
+| `spoolman_rfid_key: rfid_tag` | Extra field name | Must match what you create in Spoolman Settings |
 
-See [Spoolman Integration](../shared/spoolman-integration.md) for how to create the extra field and register UIDs on spool records.
+See [Spoolman Integration](../shared/spoolman-integration.md) — you need to create the extra field in Spoolman and register each tag UID before spool detection will work.
 
 ---
 
-## Step 4 — Configure Lane Hardware
+## Step 3 — Configure Lane Hardware
 
-Edit `~/printer_data/config/NFC/pn532_i2C.cfg`.
-
-Each lane needs one section. The default file includes four lanes — adjust or extend to match your printer:
+Edit `~/printer_data/config/NFC/pn532_i2C.cfg`. The default file has four lanes; adjust to match your printer:
 
 ```ini
 [nfc_gate lane0]
 mmu_gate:   0
 i2c_mcu:    lane0
 i2c_bus:    i2c3_PB3_PB4
+
+[nfc_gate lane1]
+mmu_gate:   1
+i2c_mcu:    lane1
+i2c_bus:    i2c3_PB3_PB4
 ```
 
 | Key | Required | Value |
-|---|---|---|
-| `mmu_gate` | Yes | Happy Hare gate number (integer, 0-based) |
-| `i2c_mcu` | Yes | Klipper MCU name — must match an `[mcu laneN]` section |
-| `i2c_bus` | Yes | Hardware I2C bus name on that MCU. For PB3/PB4 use `i2c3_PB3_PB4` |
+|---|:---:|---|
+| `mmu_gate` | Yes | Happy Hare gate number (0-based integer) |
+| `i2c_mcu` | Yes | Klipper MCU name — must match an `[mcu laneN]` in your config |
+| `i2c_bus` | Yes | I2C bus name on that MCU — use `i2c3_PB3_PB4` for PB3/PB4 on EBB42 |
 
 > [!NOTE]
-> `i2c_mcu` must exactly match the MCU name as Klipper knows it. These names come from Happy Hare's `mmu_hardware.cfg`, typically `lane0`, `lane1`, etc. A mismatch produces a Klipper startup error.
+> `i2c_mcu` must exactly match the MCU name Klipper uses. These names come from Happy Hare's `mmu_hardware.cfg`, typically `lane0`, `lane1`, etc. A mismatch causes a Klipper startup error.
 
-All polling, Spoolman, timing, and logging settings are inherited from the base `[nfc_gate]` section in `nfc_vars.cfg`. Override any of them inside a specific lane section if needed:
+All polling, timing, and logging settings are inherited from the base `[nfc_gate]` in `nfc_vars.cfg`. Override per-lane only if you need different behavior on a specific lane:
 
 ```ini
 [nfc_gate lane2]
-mmu_gate:         2
-i2c_mcu:          lane2
-i2c_bus:          i2c3_PB3_PB4
-debug:            2          ; verbose logging for this lane only
-startup_polling:  1          ; optional: auto-start this lane after init
-startup_poll_delay: 4.0      ; optional: stagger first startup poll
+mmu_gate:   2
+i2c_mcu:    lane2
+i2c_bus:    i2c3_PB3_PB4
+debug:      2              ; verbose logging on this lane only
 ```
-
-See [Configuration Reference](../shared/configuration.md) for a complete list of all available settings.
 
 ---
 
-## Step 5 — Restart Klipper
+## Step 4 — Restart Klipper
 
 ```bash
 sudo systemctl restart klipper
 ```
 
-Watch the Klipper log (`~/printer_data/logs/klippy.log`) for NFC startup messages. Errors at this stage are almost always config typos or a missing lane MCU.
+Watch the log for NFC startup messages:
+
+```bash
+tail -f ~/printer_data/logs/nfc_reader.log
+```
+
+Errors at this stage are almost always config typos or a missing/mismatched lane MCU name.
 
 ---
 
-## Step 6 — Verify
+## Step 5 — Verify Each Reader
 
-### Check all gates
+### 1. Check all gates
 
 ```gcode
 NFC_GATE_STATUS
 ```
 
-Expected output with no tags present:
-
+Expected with no tags loaded:
 ```
 NFC gate status  (4 gates configured):
   Gate 0  [lane0]:  empty
@@ -154,45 +115,58 @@ NFC gate status  (4 gates configured):
   Gate 3  [lane3]:  empty
 ```
 
-### Initialise a specific lane
+### 2. Initialize a lane
 
 ```gcode
 NFC_GATE NAME=lane0 INIT=1
 ```
 
-This runs the PN532 `GetFirmwareVersion` and `SAMConfiguration` sequence. If the reader is wired correctly and the MCU firmware is current, it completes without error.
+This runs the PN532 `GetFirmwareVersion` and `SAMConfiguration` handshake. Expected output:
+```
+NFC_GATE[lane0]: reader OK
+```
 
-### Hardware scan
+If it fails, check [Troubleshooting](troubleshooting.md).
+
+### 3. Hardware scan
+
+Hold an NFC tag near the reader, then:
 
 ```gcode
 NFC_GATE NAME=lane0 SCAN=1
 ```
 
-Reads the hardware once and reports the raw tag identity — no Spoolman lookup, no state machine. Hold an NFC tag above the reader and run this command. You should see the UID printed in the Klipper console.
+The UID prints to the console. This is a raw hardware read — no Spoolman lookup, no Happy Hare update.
 
-### Full poll
+### 4. Full pipeline test
+
+With a registered tag (see [Spoolman Integration](../shared/spoolman-integration.md)):
 
 ```gcode
 NFC_GATE NAME=lane0 POLL=1
 ```
 
-Runs one complete NFC_Manager cycle: PN532 read → UID normalization → Spoolman lookup → state machine update → macro dispatch if the state changed. Use this to test the full pipeline end-to-end.
+Expected console output:
+```
+NFC gate 0: spool 42 detected (UID 04AABBCCDD). Sending to Happy Hare.
+```
+
+This runs the full chain: PN532 read → Spoolman lookup → state update → Happy Hare macro. If this works, the pipeline is complete.
 
 ---
 
-## Step 7 — Start Background Polling
+## Step 6 — Enable Background Polling
 
-Once you have confirmed at least one lane works end-to-end:
+Once a lane works end-to-end, start automatic polling:
 
 ```gcode
 NFC_GATE NAME=lane0 READ=1
 ```
 
-To start all lanes, run `READ=1` for each. Background polling runs at `poll_interval` seconds (default 30).
+To start all lanes, run `READ=1` for each. Polling runs at the `poll_interval` (default: 30 seconds).
 
-By default, `startup_polling: -1` keeps polling manual-start only. Set `startup_polling: 1` in the base `[nfc_gate]` section or in a specific `[nfc_gate laneN]` section if you want polling to begin automatically after PN532 init succeeds.
-
-When enabling startup polling on multiple lanes, stagger `startup_poll_delay` per lane so all readers do not enter their first poll cycle at the same time:
+**Optional: automatic polling on startup.**
+By default, polling is manual-start only. To have lanes start polling automatically after Klipper boots, set `startup_polling: 1` in `pn532_i2C.cfg`. Stagger the startup delays so all readers don't poll simultaneously:
 
 ```ini
 [nfc_gate lane0]
@@ -206,24 +180,16 @@ startup_poll_delay: 2.0
 [nfc_gate lane2]
 startup_polling:    1
 startup_poll_delay: 4.0
+
+[nfc_gate lane3]
+startup_polling:    1
+startup_poll_delay: 6.0
 ```
 
 ---
 
-## Updating
+## Next Steps
 
-```bash
-cd ~/emu-nfc-reader
-git pull
-bash install.sh
-sudo systemctl restart klipper
-```
-
-> [!IMPORTANT]
-> If the update touches Klipper MCU protocol (the Klipper changelog will say so), rebuild and flash every lane MCU firmware before restarting Klipper.
-
----
-
-## SPI Status
-
-SPI reader support is work in progress and is not part of this documented setup. Do not include any SPI config files alongside the I2C files above.
+- [Spoolman Integration](../shared/spoolman-integration.md) — register your tag UIDs
+- [Commands & Macros](../shared/klipper-functions.md) — full command reference
+- [Configuration Reference](../shared/configuration.md) — tune polling, logging, and timing

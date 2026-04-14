@@ -1,53 +1,46 @@
 # EMU NFC Gate Reader
 
-> Automatic spool detection for Happy Hare / EMU gates using PN532 NFC readers on Klipper lane MCUs.
+> Plug an NFC reader into each filament gate. Load a tagged spool. Happy Hare updates automatically.
 
-Each filament gate gets a dedicated PN532 NFC reader wired directly to the lane MCU's I2C bus. When a spool carrying an NFC tag is loaded, the reader detects it, looks the UID up in Spoolman, and updates the Happy Hare gate map automatically — no manual spool selection needed.
+Each filament gate on your EMU gets a PN532 NFC reader wired to its EBB42. When you drop in a spool that has an NFC tag, the reader sees it, finds the matching entry in Spoolman, and tells Happy Hare which spool is in which gate — no console commands, no manual selection.
 
 ```
-PN532 on EBB42 → Klipper I2C → NFC_Manager → Spoolman lookup → Happy Hare macros
+Spool with NFC tag → PN532 on EBB42 → Klipper I2C → Spoolman lookup → Happy Hare gate map
 ```
 
 ---
 
-> [!CAUTION]
-> ## 🔴 Update Klipper Firmware on Every Lane MCU
->
-> Updating the Klipper host checkout is **not enough**.
->
-> The PN532 driver talks directly to Klipper MCU firmware over I2C. If the lane MCU / EBB42 is still running older firmware while the host has been updated, I2C transactions can fail in ways that look like hardware problems: ACK reads fail, `i2c_read_response` timeouts appear, or the BME280 on the same bus starts misbehaving.
->
-> **Every time you update Klipper, rebuild and flash each lane MCU.**
->
-> ```
-> 1. git pull  (update the Klipper host checkout)
-> 2. Build MCU firmware for each EBB42 / lane board
-> 3. Flash each lane MCU
-> 4. sudo systemctl restart klipper
-> 5. Confirm lane MCUs reconnect before testing NFC
-> ```
+## What You Need
+
+- A Voron with an EMU running [Happy Hare](https://github.com/moggieuk/Happy-Hare)
+- One EBB42 per filament lane (already required by Happy Hare on most EMU builds)
+- One PN532 NFC reader module per gate (~$3–5 each)
+- Spoolman running and accessible from the Pi
+- NFC tags on your spools (NTAG213/215/216 or Mifare Classic)
 
 ---
 
 ## Documentation
 
-| Guide | What it covers |
-|---|---|
-| [Install & Uninstall](docs/shared/install-uninstall.md) | Clone, install, Moonraker update manager, uninstall |
-| [Wiring](docs/i2c-pn532/wiring.md) | PN532 to EBB42 pin connections, mode selection, pullups |
-| [Setup](docs/i2c-pn532/setup.md) | printer.cfg includes, lane configuration, first boot |
-| [Configuration Reference](docs/shared/configuration.md) | Every setting documented with values and behaviour |
-| [Klipper Commands & Macros](docs/shared/klipper-functions.md) | All GCode commands and the Happy Hare macro boundary |
-| [Spoolman Integration](docs/shared/spoolman-integration.md) | Extra field setup, UID registration, lookup behaviour |
-| [Troubleshooting](docs/i2c-pn532/troubleshooting.md) | Failure patterns, diagnostics, systematic checks |
-| [Expert: Low-Level I2C Debugging](docs/shared/expert-low-level-i2c-debugging.md) | Manual PN532 bus commands for bring-up |
-| [Architecture Decisions](docs/shared/architecture-decisions.md) | Why the system is designed the way it is |
+| | Guide | What it covers |
+|---|---|---|
+| 1 | [Wiring](docs/i2c-pn532/wiring.md) | Pin connections, I2C mode selection, pull-ups |
+| 2 | [Install](docs/shared/install-uninstall.md) | Clone, run installer, configure Moonraker updates |
+| 3 | [Setup](docs/i2c-pn532/setup.md) | printer.cfg includes, lane config, first boot |
+| 4 | [Spoolman Integration](docs/shared/spoolman-integration.md) | Create the extra field, register tag UIDs |
+| 5 | [Commands & Macros](docs/shared/klipper-functions.md) | Every GCode command with examples |
+| | [Configuration Reference](docs/shared/configuration.md) | All settings with defaults |
+| | [Troubleshooting](docs/i2c-pn532/troubleshooting.md) | Failure patterns and fixes |
+| | [Expert: Low-Level I2C Debug](docs/shared/expert-low-level-i2c-debugging.md) | Manual PN532 bus commands |
 
 ---
 
 ## Quick Install
 
-Clone on the Klipper host (Pi):
+> [!IMPORTANT]
+> Before installing, rebuild and flash Klipper firmware on every EBB42 / lane MCU. The NFC driver talks to the MCU directly over I2C — if MCU firmware is stale, failures look like hardware problems. See [the full warning below](#mcu-firmware-warning).
+
+SSH to the Pi and clone the repo:
 
 ```bash
 cd ~
@@ -57,7 +50,7 @@ git sparse-checkout set klippy config docs tools
 bash install.sh
 ```
 
-Add to `printer.cfg`:
+Add to `printer.cfg` — **order matters**:
 
 ```ini
 [include NFC/nfc_vars.cfg]
@@ -65,7 +58,7 @@ Add to `printer.cfg`:
 [include NFC/pn532_i2C.cfg]
 ```
 
-Configure Spoolman in `~/printer_data/config/NFC/nfc_vars.cfg`:
+Set your Spoolman URL in `~/printer_data/config/NFC/nfc_vars.cfg`:
 
 ```ini
 [nfc_gate]
@@ -73,7 +66,7 @@ spoolman_url:      auto
 spoolman_rfid_key: rfid_tag
 ```
 
-Add the Moonraker update manager block to `~/printer_data/config/moonraker.conf`:
+Add the Moonraker update block to `moonraker.conf`:
 
 ```ini
 [update_manager emu_nfc_reader]
@@ -85,113 +78,89 @@ managed_services: klipper
 install_script:   install.sh
 ```
 
-Restart Klipper and Moonraker:
+Restart and verify:
 
 ```bash
 sudo systemctl restart klipper moonraker
 ```
 
-Verify:
-
 ```gcode
 NFC_GATE_STATUS
 ```
 
-See [Install & Uninstall](docs/shared/install-uninstall.md) for the full first-boot checklist and uninstall steps.
+Expected (with no tags loaded):
+```
+NFC gate status  (4 gates configured):
+  Gate 0  [lane0]:  empty
+  Gate 1  [lane1]:  empty
+  Gate 2  [lane2]:  empty
+  Gate 3  [lane3]:  empty
+```
+
+See [Install & Uninstall](docs/shared/install-uninstall.md) for the complete first-boot checklist.
 
 ---
 
-## Architecture
+## Day-to-Day Commands
 
-The system is layered. Each layer owns exactly one responsibility and must not reach across the boundary.
-
-| Layer | File | Owns | Does not own |
-|---|---|---|---|
-| **PN532Driver** | `pn532_driver.py` | PN532 wire protocol, I2C frames, UID extraction | Spoolman, gate policy, Happy Hare commands |
-| **SpoolmanClient** | `spoolman_client.py` | UID → spool record lookup and cache | Gate state, lane assignment, MMU commands |
-| **NFC_Manager** | `NFC_manager.py` | Gate state machine, changed/removed decisions, macro dispatch | PN532 protocol details |
-| **nfc_macros.cfg** | `nfc_macros.cfg` | Happy Hare-facing GCode calls | NFC bus reads, Spoolman HTTP lookups |
-
-Tags are identified by factory UID only. Tags are never written to. The UID is stored as a Spoolman spool extra field. NFC_Manager fires one of three macros when gate state changes:
-
-```
-_NFC_SPOOL_CHANGED  GATE=<n>  SPOOL_ID=<id>  UID=<uid>
-_NFC_SPOOL_REMOVED  GATE=<n>
-_NFC_TAG_NO_SPOOL   GATE=<n>  UID=<uid>
-```
-
-The macros in `nfc_macros.cfg` translate these events into Happy Hare runtime gate-map updates. The default macro uses `MMU_GATE_MAP ... SYNC=1` so Happy Hare maintains the local gate assignment and synchronizes it to Spoolman when Spoolman support is enabled. You can edit the macros to match your Happy Hare version without touching Python.
-
----
-
-## Runtime Flow
-
-```
-Tag detected by PN532
-        │
-        ▼
-PN532Driver extracts UID, passes it to NFC_Manager
-        │
-        ▼
-NFC_Manager checks gate state — is this a new UID, the same UID, or absence?
-        │
-        ▼
-If new UID: SpoolmanClient resolves UID → spool_id (cached)
-        │
-        ▼
-NFC_Manager updates gate state machine
-        │
-        ▼
-On state change: dispatch _NFC_SPOOL_CHANGED / _NFC_SPOOL_REMOVED / _NFC_TAG_NO_SPOOL
-        │
-        ▼
-nfc_macros.cfg calls MMU_GATE_MAP ... SYNC=1 on Happy Hare
-```
-
----
-
-## Commands
-
-### Status
+These are the commands you'll actually use at the Fluidd/Mainsail console:
 
 ```gcode
-NFC_GATE_STATUS                   ; show all gates
-NFC_GATE NAME=lane0 STATUS=1      ; show one gate
+NFC_GATE_STATUS                    ; see all gates at a glance
+NFC_GATE NAME=lane0 SCAN=1         ; read a tag and show its UID
+NFC_GATE NAME=lane0 POLL=1         ; full cycle: read → Spoolman → Happy Hare
+NFC_GATE NAME=lane0 READ=1         ; start automatic background polling
+NFC_GATE NAME=lane0 READ=0         ; stop polling
 ```
 
-### Lane operations
-
-```gcode
-NFC_GATE NAME=lane0 INIT=1        ; initialise PN532
-NFC_GATE NAME=lane0 SCAN=1        ; one hardware read, no state machine
-NFC_GATE NAME=lane0 POLL=1        ; one full poll including Spoolman lookup
-NFC_GATE NAME=lane0 APPLY=1       ; force cached spool to Happy Hare
-NFC_GATE NAME=lane0 CLEAR_CACHE=1 ; clear cached spool_id, no HH dispatch
-NFC_GATE NAME=lane0 READ=1        ; start reactor timer polling
-NFC_GATE NAME=lane0 READ=0        ; stop reactor timer polling
-```
-
-### Expert low-level debug
-
-Enable in `nfc_vars.cfg`:
-
-```ini
-[nfc_gate]
-low_level_debug: True
-```
-
-```gcode
-NFC_GATE NAME=lane0 HELP=1        ; list all available debug steps
-NFC_GATE NAME=lane0 STEP=WAKEUP   ; manual PN532 init sequence
-```
-
-See [Expert: Low-Level I2C Debugging](docs/shared/expert-low-level-i2c-debugging.md).
+See [Commands & Macros](docs/shared/klipper-functions.md) for everything, including how to test the Happy Hare handoff without hardware.
 
 ---
 
-## SPI Support
+## How It Works
 
-SPI reader support is work in progress. SPI config files may be present in the repo but they are not part of the documented or supported install path. Do not include SPI config files alongside the I2C config files.
+Tags are never written to. The NFC tag's factory UID is stored in a Spoolman extra field (`rfid_tag` by default). When a reader sees a tag:
+
+1. PN532 reads the UID and passes it up to NFC_Manager
+2. NFC_Manager checks if this is a new spool, the same spool, or an absence
+3. On a new spool: SpoolmanClient finds the matching spool record
+4. NFC_Manager fires one of three Klipper macros:
+   - `_NFC_SPOOL_CHANGED GATE=<n> SPOOL_ID=<id> UID=<uid>` — new spool detected
+   - `_NFC_SPOOL_REMOVED GATE=<n>` — spool removed (after threshold missed polls)
+   - `_NFC_TAG_NO_SPOOL GATE=<n> UID=<uid>` — tag read but not registered in Spoolman
+5. `nfc_macros.cfg` translates those events into `MMU_GATE_MAP` calls to Happy Hare
+
+The macros in `nfc_macros.cfg` are the only place Happy Hare commands live. You can edit them for your Happy Hare version without touching any Python.
+
+---
+
+<a name="mcu-firmware-warning"></a>
+
+> [!CAUTION]
+> ## 🔴⚡ Your Lane MCUs Should Run Firmware Built From Your Current Host firmware version
+>
+> This is the number one cause of mysterious NFC failures — and it looks nothing like a firmware problem. It looks like broken wiring, a dead PN532, a misconfigured I2C bus, or a ghost in the machine.
+>
+> **Here's what's actually happening:** The PN532 driver doesn't talk to Klipper software on the Pi. It talks directly to the firmware running on each EBB42 over I2C. When you run `git pull` on the Pi, the host updates — but every lane MCU is still running whatever firmware it had before. Now they speak different protocol versions, and I2C transactions start silently failing:
+>
+> - 🔇 ACK reads fail immediately after the ready byte succeeds
+> - ⏱️ `i2c_read_response` timeouts appear out of nowhere
+> - 🌡️ Your BME280 on the same bus starts misbehaving for no apparent reason
+>
+> **The fix is not in the wiring. It is not in the config. It is in the firmware.**
+>
+> Every time you update Klipper — before you touch NFC config, before you run `INIT`, before you blame the hardware — do this:
+>
+> ```
+> 1. git pull                          ← update the Klipper host checkout
+> 2. Build MCU firmware                ← compiled from THAT exact host version
+> 3. Flash every lane MCU / EBB42      ← every one, not just lane0
+> 4. sudo systemctl restart klipper
+> 5. Confirm all lane MCUs reconnect   ← check Fluidd/Mainsail before testing NFC
+> ```
+>
+> ✅ Host and MCU firmware versions match → NFC works reliably
+> ❌ Host updated, MCUs not reflashed → NFC fails in ways that will waste hours
 
 ---
 
