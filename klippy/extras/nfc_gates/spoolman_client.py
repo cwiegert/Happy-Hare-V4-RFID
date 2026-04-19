@@ -481,6 +481,21 @@ class SpoolmanClient:
         spool_id = int(raw_id) if raw_id is not None else None
         return spool_id
 
+    def get_uid_for_spool(self, spool_id):
+        """Return the NFC UID registered for *spool_id*, or None.
+
+        Fetches the spool detail record and reads extra[rfid_key].  Used at
+        startup to pre-populate the NFC cache from the HH gate map so the UID
+        is known before the first physical tag scan.
+        """
+        spool = self._fetch_spool_detail(spool_id)
+        if not spool:
+            return None
+        uid_raw = (spool.get('extra') or {}).get(self._rfid_key, '')
+        if not uid_raw:
+            return None
+        return self._normalise_uid(str(uid_raw))
+
     def clear_cache(self):
         """Flush all cached UID → spool_id mappings."""
         self._cache.clear()
