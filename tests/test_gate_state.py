@@ -60,10 +60,6 @@ _stub('nfc_gates.spoolman_client', SpoolmanClient=object)
 from nfc_gates.NFC_manager import GateState, EVENT_CHANGED, EVENT_UID_ONLY, EVENT_REMOVED
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
 def assert_event(event, expected_type, gate=0, uid=None, spool=None):
     assert event is not None, "Expected an event but got None"
     etype, egate, euid, espool = event
@@ -75,10 +71,6 @@ def assert_event(event, expected_type, gate=0, uid=None, spool=None):
 def assert_silent(event):
     assert event is None, f"Expected no event but got {event!r}"
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Tests
-# ─────────────────────────────────────────────────────────────────────────────
 
 def test_empty_gate_stays_silent():
     gs = GateState(gate=0)
@@ -97,7 +89,6 @@ def test_same_spool_stays_silent():
     assert_silent(gs.process_read('A3F200CC', 1042))
 
 def test_different_spool_same_uid_emits_changed():
-    """Same physical tag but spool ID changed (shouldn't happen, but handle it)."""
     gs = GateState(gate=0)
     gs.process_read('A3F200CC', 1042)
     event = gs.process_read('A3F200CC', 9999)
@@ -115,12 +106,11 @@ def test_tag_without_spool_emits_uid_only():
     assert_event(event, EVENT_UID_ONLY, uid='A3F200CC', spool=None)
 
 def test_debounce_suppresses_early_removal():
-    """Removal is only reported after absent_threshold consecutive misses."""
     gs = GateState(gate=0, absent_threshold=3)
     gs.process_read('A3F200CC', 1042)
-    assert_silent(gs.process_read(None, None))   # miss 1
-    assert_silent(gs.process_read(None, None))   # miss 2
-    event = gs.process_read(None, None)           # miss 3 → removed
+    assert_silent(gs.process_read(None, None))
+    assert_silent(gs.process_read(None, None))
+    event = gs.process_read(None, None)
     assert_event(event, EVENT_REMOVED, gate=0)
 
 def test_removal_with_threshold_1():
@@ -132,25 +122,23 @@ def test_removal_with_threshold_1():
 def test_removal_clears_state():
     gs = GateState(gate=0, absent_threshold=1)
     gs.process_read('A3F200CC', 1042)
-    gs.process_read(None, None)                  # removal
+    gs.process_read(None, None)
     event = gs.process_read('B1D4A209', 207)
     assert_event(event, EVENT_CHANGED, uid='B1D4A209', spool=207)
 
 def test_intermittent_miss_resets_counter():
-    """A single successful read resets the miss counter — no false removal."""
     gs = GateState(gate=0, absent_threshold=3)
     gs.process_read('A3F200CC', 1042)
-    gs.process_read(None, None)   # miss 1
-    gs.process_read(None, None)   # miss 2
-    gs.process_read('A3F200CC', 1042)  # tag back — counter resets
-    gs.process_read(None, None)   # miss 1 again
-    assert_silent(gs.process_read(None, None))   # miss 2, still below threshold
+    gs.process_read(None, None)
+    gs.process_read(None, None)
+    gs.process_read('A3F200CC', 1042)
+    gs.process_read(None, None)
+    assert_silent(gs.process_read(None, None))
 
 def test_removal_only_fires_once():
-    """After removal, further None reads should not emit additional events."""
     gs = GateState(gate=0, absent_threshold=1)
     gs.process_read('A3F200CC', 1042)
-    gs.process_read(None, None)          # removal fires
+    gs.process_read(None, None)
     assert_silent(gs.process_read(None, None))
     assert_silent(gs.process_read(None, None))
 
@@ -161,16 +149,11 @@ def test_gate_index_preserved_in_event():
         assert_event(event, EVENT_CHANGED, gate=gate_num)
 
 def test_uid_only_to_spool_update():
-    """Tag gains a spool ID between polls — should emit CHANGED."""
     gs = GateState(gate=0)
     gs.process_read('A3F200CC', None)
     event = gs.process_read('A3F200CC', 1042)
     assert_event(event, EVENT_CHANGED, spool=1042)
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Runner
-# ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_')]

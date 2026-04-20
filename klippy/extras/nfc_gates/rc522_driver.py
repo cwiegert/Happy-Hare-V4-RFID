@@ -132,7 +132,7 @@ class RC522Driver:
 
     def _write(self, reg, val):
         """Write one byte to an RC522 register (no response expected)."""
-        if self._debug >= 2:
+        if self._debug >= 4:
             logger.debug("nfc_gates: gate %d  W %-15s (0x%02X) = 0x%02X",
                           self._gate, _REG_NAMES.get(reg, '?'), reg, val & 0xFF)
         self._spi.spi_send([(reg << 1) & 0x7E, val & 0xFF])
@@ -141,7 +141,7 @@ class RC522Driver:
         """Read one byte from an RC522 register and return it as an integer."""
         resp = self._spi.spi_transfer([((reg << 1) & 0x7E) | 0x80, 0x00])
         val = resp['response'][1]
-        if self._debug >= 2:
+        if self._debug >= 4:
             logger.debug("nfc_gates: gate %d  R %-15s (0x%02X) -> 0x%02X",
                           self._gate, _REG_NAMES.get(reg, '?'), reg, val)
         return val
@@ -155,11 +155,11 @@ class RC522Driver:
         Soft-reset the RC522 and configure it for 13.56 MHz ISO14443A operation.
         Must be called once after klippy:connect, before the first read_tag().
         """
-        if self._debug >= 1:
-            logger.info("nfc_gates: gate %d init — soft-resetting RC522", self._gate)
+        if self._debug >= 4:
+            logger.debug("nfc_gates: gate %d init — soft-resetting RC522", self._gate)
         self._write(_CommandReg,    _PCD_RESETPHASE)
         time.sleep(0.050)            # Datasheet: max reset time 37.74 ms; 50 ms is safe
-        if self._debug >= 2:
+        if self._debug >= 4:
             logger.debug("nfc_gates: gate %d init — reset done, configuring timer "
                           "and modulation", self._gate)
         self._write(_TModeReg,      0x8D)
@@ -171,14 +171,13 @@ class RC522Driver:
         # Enable antenna TX pins (bits 0–1 of TxControlReg)
         tx = self._read(_TxControlReg)
         if not (tx & 0x03):
-            if self._debug >= 2:
+            if self._debug >= 4:
                 logger.debug("nfc_gates: gate %d init — enabling antenna TX pins "
                               "(TxControl was 0x%02X)", self._gate, tx)
             self._write(_TxControlReg, tx | 0x03)
         tx_final = self._read(_TxControlReg)
-        if self._debug >= 1:
-            logger.info("nfc_gates: gate %d RC522 init OK (TxControl=0x%02X)",
-                         self._gate, tx_final)
+        logger.info("nfc_gates: gate %d RC522 init OK (TxControl=0x%02X)",
+                    self._gate, tx_final)
 
     def is_alive(self):
         """Return True if the reader is responding (antenna TX bits are set)."""
@@ -199,7 +198,7 @@ class RC522Driver:
         Returns (MI_OK, data_bytes, bit_length) on success,
                 (MI_ERR, [], 0) on timeout, collision, or protocol error.
         """
-        if self._debug >= 2:
+        if self._debug >= 4:
             logger.debug("nfc_gates: gate %d  _transceive send=[%s]",
                           self._gate,
                           ' '.join('0x%02X' % b for b in send_data))
@@ -218,7 +217,7 @@ class RC522Driver:
         self._write(_CommandReg,    _PCD_TRANSCEIVE)
         self._write(_BitFramingReg, self._read(_BitFramingReg) | 0x80)  # StartSend
 
-        if self._debug >= 2:
+        if self._debug >= 4:
             logger.debug("nfc_gates: gate %d  _transceive — transmission started, "
                           "waiting %.0f ms for response",
                           self._gate, self._transceive_delay * 1000)
@@ -230,7 +229,7 @@ class RC522Driver:
         self._write(_BitFramingReg, self._read(_BitFramingReg) & 0x7F)
 
         irq = self._read(_ComIrqReg)
-        if self._debug >= 2:
+        if self._debug >= 4:
             logger.debug("nfc_gates: gate %d  _transceive IRQ=0x%02X "
                           "(TimerIRq=%d RxIRq=%d IdleIRq=%d)",
                           self._gate, irq,
@@ -238,7 +237,7 @@ class RC522Driver:
 
         # TimerIRq (bit 0) set with no RxIRq (bit 5) or IdleIRq (bit 4) → no tag
         if (irq & 0x01) and not (irq & 0x30):
-            if self._debug >= 2:
+            if self._debug >= 4:
                 logger.debug("nfc_gates: gate %d  _transceive -> MI_ERR (timer "
                               "expired, no tag response)", self._gate)
             return MI_ERR, [], 0
@@ -246,7 +245,7 @@ class RC522Driver:
         # Protocol error (collision, CRC error, buffer overflow, parity error)
         err = self._read(_ErrorReg)
         if err & 0x1B:
-            if self._debug >= 2:
+            if self._debug >= 4:
                 logger.debug("nfc_gates: gate %d  _transceive -> MI_ERR "
                               "(ErrorReg=0x%02X: collision=%d CRC=%d overflow=%d "
                               "parity=%d)",
@@ -258,7 +257,7 @@ class RC522Driver:
         # Read received bytes from FIFO
         fifo_len = self._read(_FIFOLevelReg)
         if fifo_len == 0:
-            if self._debug >= 2:
+            if self._debug >= 4:
                 logger.debug("nfc_gates: gate %d  _transceive -> MI_ERR "
                               "(FIFO empty after IRQ)", self._gate)
             return MI_ERR, [], 0
@@ -270,7 +269,7 @@ class RC522Driver:
             fifo_len = 16
         back_data = [self._read(_FIFODataReg) for _ in range(fifo_len)]
 
-        if self._debug >= 2:
+        if self._debug >= 4:
             logger.debug("nfc_gates: gate %d  _transceive -> MI_OK "
                           "fifo=%d bits=%d data=[%s]",
                           self._gate, fifo_len, bit_len,
@@ -297,35 +296,35 @@ class RC522Driver:
         None
             No tag in the RF field, or a communication error occurred.
         """
-        if self._debug >= 2:
+        if self._debug >= 4:
             logger.debug("nfc_gates: gate %d read_tag — begin", self._gate)
 
         # ── Stage 1: REQA ────────────────────────────────────────────────────
-        if self._debug >= 2:
+        if self._debug >= 4:
             logger.debug("nfc_gates: gate %d read_tag — stage 1: REQA", self._gate)
         self._write(_BitFramingReg, 0x07)   # 7-bit frame
         status, data, bits = self._transceive([_PICC_REQIDL])
         if status != MI_OK or bits != 0x10:  # Expect 16-bit ATQA
-            if self._debug >= 2:
+            if self._debug >= 4:
                 logger.debug("nfc_gates: gate %d read_tag — REQA failed "
                               "(status=%s bits=%d), no tag",
                               self._gate, 'OK' if status == MI_OK else 'ERR', bits)
-            elif self._debug >= 1:
-                logger.info("nfc_gates: gate %d — no tag detected", self._gate)
+            elif self._debug >= 4:
+                logger.debug("nfc_gates: gate %d — no tag detected", self._gate)
             return None
 
-        if self._debug >= 2:
+        if self._debug >= 4:
             logger.debug("nfc_gates: gate %d read_tag — REQA OK (ATQA bits=%d)",
                           self._gate, bits)
 
         # ── Stage 2: Anti-collision ───────────────────────────────────────────
-        if self._debug >= 2:
+        if self._debug >= 4:
             logger.debug("nfc_gates: gate %d read_tag — stage 2: ANTICOLL",
                           self._gate)
         self._write(_BitFramingReg, 0x00)
         status, data, bits = self._transceive([_PICC_ANTICOLL, 0x20])
         if status != MI_OK or len(data) < 5:
-            if self._debug >= 2:
+            if self._debug >= 4:
                 logger.debug("nfc_gates: gate %d read_tag — ANTICOLL failed "
                               "(status=%s data_len=%d)",
                               self._gate, 'OK' if status == MI_OK else 'ERR',
@@ -335,7 +334,7 @@ class RC522Driver:
         # Verify XOR checksum over 4 UID bytes
         chk = data[0] ^ data[1] ^ data[2] ^ data[3]
         if chk != data[4]:
-            if self._debug >= 2:
+            if self._debug >= 4:
                 logger.debug("nfc_gates: gate %d read_tag — ANTICOLL XOR checksum "
                               "mismatch (calc=0x%02X got=0x%02X)",
                               self._gate, chk, data[4])
@@ -343,7 +342,7 @@ class RC522Driver:
 
         uid_hex = "{:02X}{:02X}{:02X}{:02X}".format(*data[:4])
 
-        if self._debug >= 1:
-            logger.info("nfc_gates: gate %d read_tag — uid=%s", self._gate, uid_hex)
+        if self._debug >= 4:
+            logger.debug("nfc_gates: gate %d read_tag — uid=%s", self._gate, uid_hex)
 
         return uid_hex

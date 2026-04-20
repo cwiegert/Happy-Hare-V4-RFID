@@ -973,10 +973,12 @@ class NFCGate:
         self._gcode = self.printer.lookup_object('gcode')
 
         if not self._commands_registered:
-            # Register the status command when there is no base [nfc_gate]
-            # section (defaults is None means load_config was never called, so
-            # NFCGateDefaults.__init__ never ran and no one registered it yet).
-            if self._defaults is None and not _lane_instances and not self._status_registered:
+            # Register the status command once when there is no base [nfc_gate]
+            # section. We guard on _lane_instances[0] is self so that only the
+            # first lane instance registers it — later lanes skip this block.
+            # (self._defaults is None means NFCGateDefaults.__init__ never ran
+            # and no one else has registered NFC_GATE_STATUS yet.)
+            if self._defaults is None and _lane_instances and _lane_instances[0] is self and not self._status_registered:
                 self._gcode.register_command(
                     'NFC_GATE_STATUS',
                     self._cmd_NFC_GATE_STATUS_fallback,
@@ -1008,7 +1010,7 @@ class NFCGate:
         Runs in the reactor thread 2 seconds after klippy:connect fires.
         Returns reactor.NEVER so the timer does not repeat.
         """
-        if self._debug >= 2:
+        if self._debug >= 4:
             logger.debug(
                 "nfc_gate: [%s] delayed init — wake + SAMConfiguration",
                 self._name)
@@ -1062,7 +1064,7 @@ class NFCGate:
         return self.reactor.NEVER
 
     def _handle_disconnect(self):
-        if self._debug >= 2:
+        if self._debug >= 4:
             logger.debug("nfc_gate: [%s] disconnect — stopping polling timer",
                          self._name)
         self._polling = False
@@ -1077,7 +1079,7 @@ class NFCGate:
                            self._name, self._gate)
             self._polling = False
             return self.reactor.NEVER
-        if self._debug >= 2:
+        if self._debug >= 4:
             logger.debug("nfc_gate: [%s] poll cycle start — "
                          "current state: uid=%s spool=%s misses=%d",
                          self._name,
@@ -1089,7 +1091,7 @@ class NFCGate:
             self._poll()
         except Exception:
             logger.exception("nfc_gate: [%s] poll error", self._name)
-        if self._debug >= 2:
+        if self._debug >= 4:
             logger.debug("nfc_gate: [%s] poll cycle done — "
                          "next poll in %.0fs", self._name, self._poll_interval)
         return self.reactor.monotonic() + self._poll_interval
@@ -1181,11 +1183,11 @@ class NFCGate:
         uid_hex = self._reader.read_tag()
 
         if uid_hex is None:
-            if self._debug >= 1:
-                logger.info("nfc_gate: [%s] gate %d — no tag (miss %d)",
-                            self._name, self._gate, self._state.miss_count + 1)
+            if self._debug >= 4:
+                logger.debug("nfc_gate: [%s] gate %d — no tag (miss %d)",
+                             self._name, self._gate, self._state.miss_count + 1)
         else:
-            if self._debug >= 2:
+            if self._debug >= 4:
                 logger.debug("nfc_gate: [%s] gate %d — tag read uid=%s",
                              self._name, self._gate, uid_hex)
 
@@ -1198,14 +1200,14 @@ class NFCGate:
             # process_read will detect the mismatch and dispatch EVENT_CHANGED.
             if self._spoolman is not None:
                 spool_id = self._spoolman.lookup_spool_by_uid(uid_hex)
-                if self._debug >= 2:
-                    logger.debug(
+                if self._debug >= 3:
+                    logger.info(
                         "nfc_gate: [%s] gate %d — uid=%s  Spoolman→spool_id=%s",
                         self._name, self._gate, uid_hex, spool_id)
             else:
                 spool_id = None
-                if self._debug >= 2:
-                    logger.debug(
+                if self._debug >= 3:
+                    logger.info(
                         "nfc_gate: [%s] gate %d — uid=%s  no Spoolman configured",
                         self._name, self._gate, uid_hex)
         else:
@@ -1213,9 +1215,9 @@ class NFCGate:
 
         event = self._state.process_read(uid_hex, spool_id)
 
-        # ── debug=2 compact per-poll trace ───────────────────────────────────
+        # ── debug=4 compact per-poll trace ───────────────────────────────────
         # One line per poll: lane, gate, what was read, and what action fired.
-        if self._debug >= 2:
+        if self._debug >= 4:
             if uid_hex is not None:
                 read_str = "tag=%-16s" % uid_hex
             else:
@@ -1246,7 +1248,7 @@ class NFCGate:
 
         if event is not None:
             event_type, gate, uid, spool = event
-            if self._debug >= 1:
+            if self._debug >= 3:
                 logger.info("nfc_gate: [%s] gate %d — %s uid=%s spool=%s",
                             self._name, gate, event_type, uid, spool)
 
@@ -1308,9 +1310,9 @@ class NFCGate:
                 self._suppress_next_dispatch_spool = None
 
             if not suppress:
-                if self._debug >= 2:
-                    logger.debug("nfc_gate: [%s] gate %d — dispatching GCode "
-                                 "for event %s", self._name, gate, event_type)
+                if self._debug >= 3:
+                    logger.info("nfc_gate: [%s] gate %d — dispatching GCode "
+                                "for event %s", self._name, gate, event_type)
                 # Update the Spoolman location field only when we are actually
                 # dispatching to HH — not on suppressed startup re-seeds.
                 if self._spoolman is not None:
@@ -1409,7 +1411,7 @@ class NFCGateManager:
                                                 minval=1, maxval=255)
         transceive_delay = config.getfloat('transceive_delay', 0.035,
                                             minval=0.001, maxval=1.0)
-        self._debug      = config.getint('debug', 1, minval=0, maxval=2)
+        self._debug      = config.getint('debug', 2, minval=0, maxval=4)
         self._low_level_debug = _get_low_level_debug(config)
         console_output, console_log_level = _get_console_config(config)
 
@@ -1585,8 +1587,8 @@ class NFCGateManager:
         return self.reactor.monotonic() + self._poll_interval
 
     def _poll_all_gates(self):
-        if self._debug >= 1:
-            logger.info("nfc_gates: poll cycle — checking %d gate(s)",
+        if self._debug >= 4:
+            logger.debug("nfc_gates: poll cycle — checking %d gate(s)",
                          self._gate_count)
 
         for i in range(self._gate_count):
@@ -1594,7 +1596,7 @@ class NFCGateManager:
 
     def _poll_gate(self, i):
         if self._reader_failed[i]:
-            if self._debug >= 2:
+            if self._debug >= 4:
                 logger.debug("nfc_gates: gate %d skipped (reader failed)", i)
             return
 
@@ -1604,8 +1606,8 @@ class NFCGateManager:
             logger.error("nfc_gates: gate %d read error: %s", i, e)
             uid_hex = None
 
-        if self._debug >= 1 and uid_hex is None:
-            logger.info("nfc_gates: gate %d — no tag (miss_count=%d)",
+        if self._debug >= 4 and uid_hex is None:
+            logger.debug("nfc_gates: gate %d — no tag (miss_count=%d)",
                          i, self._states[i].miss_count + 1)
 
         if uid_hex is not None:
@@ -1620,7 +1622,7 @@ class NFCGateManager:
         event = self._states[i].process_read(uid_hex, spool_id)
         if event is not None:
             event_type, gate, uid, spool = event
-            if self._debug >= 1:
+            if self._debug >= 3:
                 logger.info("nfc_gates: gate %d — state change: %s "
                             "(uid=%s spool=%s)", i, event_type, uid, spool)
             if (self._suppress_next_dispatch_uid[i] is not None
@@ -1636,7 +1638,7 @@ class NFCGateManager:
                     elif event_type == EVENT_REMOVED and spool is not None:
                         self._spoolman.clear_spool_location(spool)
                 self._klipper.dispatch(event_type, gate, uid, spool)
-        elif self._debug >= 2:
+        elif self._debug >= 4:
             logger.debug("nfc_gates: gate %d — no state change (%r)",
                          i, self._states[i])
         if (uid_hex is not None and self._suppress_next_dispatch_uid[i] is not None

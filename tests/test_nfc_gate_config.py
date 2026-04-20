@@ -2,22 +2,12 @@
 tests/test_nfc_gate_config.py
 ==============================
 Unit tests for NFCGateDefaults — the [nfc_gate] base section handler.
-
-These tests exercise the config-reading layer without any Klipper runtime or
-hardware.  NFCGate itself is not tested here because it requires MCU_I2C.lookup()
-which pulls in the full Klipper bus stack.
-
-Run from the project root:
-    python3 -m pytest tests/test_nfc_gate_config.py -v
-or without pytest:
-    python3 tests/test_nfc_gate_config.py
 """
 
 import sys
 import os
 import types
 
-# ── Stub Klipper and driver dependencies so manager.py can be imported ────────
 _EXTRAS = os.path.join(os.path.dirname(__file__), '..', 'klippy', 'extras')
 sys.path.insert(0, _EXTRAS)
 
@@ -64,17 +54,11 @@ _stub('nfc_gates.spoolman_client', SpoolmanClient=object)
 from nfc_gates.NFC_manager import NFCGateDefaults
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Minimal mock Klipper config object
-# ─────────────────────────────────────────────────────────────────────────────
-
 class _MockGCode:
-    """Minimal stand-in for Klipper's GCode object."""
     def register_command(self, *a, **k): pass
 
 
 class _MockPrinter:
-    """Minimal stand-in for Klipper's PrinterObjects."""
     def lookup_object(self, name, default=None):
         return _MockGCode()
     def get_reactor(self):
@@ -82,13 +66,6 @@ class _MockPrinter:
 
 
 class MockConfig:
-    """
-    Lightweight stand-in for Klipper's ConfigWrapper.
-
-    Supports the same get / getfloat / getint / get_printer signatures used by
-    NFCGateDefaults, including minval / maxval validation.
-    """
-
     def __init__(self, values=None, name='nfc_gate'):
         self._values  = dict(values or {})
         self._name    = name
@@ -135,12 +112,7 @@ class MockConfig:
         return val
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# NFCGateDefaults — built-in defaults (empty base section)
-# ─────────────────────────────────────────────────────────────────────────────
-
 def test_defaults_built_in_values():
-    """Empty [nfc_gate] section yields the documented built-in defaults."""
     d = NFCGateDefaults(MockConfig())
     assert d.spoolman_url       == ''
     assert d.spoolman_rfid_key  == 'rfid'
@@ -152,11 +124,9 @@ def test_defaults_built_in_values():
     assert d.absent_threshold   == 3
     assert d.transceive_delay   == 0.250
     assert d.crc_delay          == 0.050
-    assert d.debug              == 1
-
+    assert d.debug              == 2
 
 def test_defaults_all_keys_overridden():
-    """Every key in [nfc_gate] can be set and is reflected in the object."""
     d = NFCGateDefaults(MockConfig({
         'spoolman_url':       'http://192.168.1.50:7912',
         'spoolman_rfid_key':  'nfc_uid',
@@ -182,24 +152,17 @@ def test_defaults_all_keys_overridden():
     assert d.crc_delay          == 0.1
     assert d.debug              == 2
 
-
 def test_defaults_partial_override():
-    """Only the keys present in the section are changed; others stay at defaults."""
     d = NFCGateDefaults(MockConfig({
         'spoolman_url': 'http://mainsailos.local:7912',
         'debug':        0,
     }))
-    assert d.spoolman_url     == 'http://mainsailos.local:7912'
-    assert d.debug            == 0
-    assert d.startup_polling  == -1
+    assert d.spoolman_url       == 'http://mainsailos.local:7912'
+    assert d.debug              == 0
+    assert d.startup_polling    == -1
     assert d.startup_poll_delay == 0.0
-    assert d.poll_interval    == 30.0
-    assert d.absent_threshold == 3
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# NFCGateDefaults — range validation
-# ─────────────────────────────────────────────────────────────────────────────
+    assert d.poll_interval      == 30.0
+    assert d.absent_threshold   == 3
 
 def test_defaults_poll_interval_below_min_raises():
     try:
@@ -208,14 +171,12 @@ def test_defaults_poll_interval_below_min_raises():
     except (ValueError, Exception):
         pass
 
-
 def test_defaults_startup_polling_below_min_raises():
     try:
         NFCGateDefaults(MockConfig({'startup_polling': -2}))
         assert False, "Expected ValueError for startup_polling below minval"
     except (ValueError, Exception):
         pass
-
 
 def test_defaults_startup_polling_above_max_raises():
     try:
@@ -224,7 +185,6 @@ def test_defaults_startup_polling_above_max_raises():
     except (ValueError, Exception):
         pass
 
-
 def test_defaults_startup_poll_delay_below_min_raises():
     try:
         NFCGateDefaults(MockConfig({'startup_poll_delay': -0.1}))
@@ -232,14 +192,12 @@ def test_defaults_startup_poll_delay_below_min_raises():
     except (ValueError, Exception):
         pass
 
-
 def test_defaults_debug_above_max_raises():
     try:
-        NFCGateDefaults(MockConfig({'debug': 3}))
+        NFCGateDefaults(MockConfig({'debug': 5}))
         assert False, "Expected ValueError for debug above maxval"
     except (ValueError, Exception):
         pass
-
 
 def test_defaults_absent_threshold_zero_raises():
     try:
@@ -248,10 +206,6 @@ def test_defaults_absent_threshold_zero_raises():
     except (ValueError, Exception):
         pass
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Runner
-# ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_')]

@@ -171,7 +171,7 @@ class SpoolmanClient:
         renamed fields without treating arbitrary values as URLs.
         """
         url = '{}/server/config'.format(self._moonraker_url)
-        if self._debug >= 1:
+        if self._debug >= 3:
             logger.info("spoolman: discovering URL from Moonraker %s", url)
         try:
             with urlopen(url, timeout=self._timeout) as resp:
@@ -213,7 +213,7 @@ class SpoolmanClient:
         now = time.monotonic()
         if self._cb_failures >= self._CB_THRESHOLD:
             if now < self._cb_backoff_until:
-                if self._debug >= 2:
+                if self._debug >= 4:
                     logger.debug(
                         "spoolman: circuit open — skipping request "
                         "(retry in %.0fs)", self._cb_backoff_until - now)
@@ -226,9 +226,9 @@ class SpoolmanClient:
             logger.warning("spoolman: no Spoolman URL configured or discovered")
             return None
         url = '{}/api/v1/spool'.format(base_url)
-        if self._debug >= 2:
-            logger.debug("spoolman: GET %s (looking for uid=%s, key=%s)",
-                          url, uid_hex, self._rfid_key)
+        if self._debug >= 3:
+            logger.info("spoolman: GET %s (looking for uid=%s, key=%s)",
+                        url, uid_hex, self._rfid_key)
         try:
             with urlopen(url, timeout=self._timeout) as resp:
                 spools = json.loads(resp.read().decode('utf-8'))
@@ -279,8 +279,8 @@ class SpoolmanClient:
             logger.warning("spoolman: no Spoolman URL configured or discovered")
             return None
         url = '{}/api/v1/spool/{}'.format(base_url, spool_id)
-        if self._debug >= 2:
-            logger.debug("spoolman: GET %s", url)
+        if self._debug >= 3:
+            logger.info("spoolman: GET %s", url)
         try:
             with urlopen(url, timeout=self._timeout) as resp:
                 spool = json.loads(resp.read().decode('utf-8'))
@@ -308,8 +308,8 @@ class SpoolmanClient:
             data=body,
             headers={'Content-Type': 'application/json'},
             method='PATCH')
-        if self._debug >= 2:
-            logger.debug("spoolman: PATCH %s payload=%s", url, payload)
+        if self._debug >= 3:
+            logger.info("spoolman: PATCH %s payload=%s", url, payload)
         with urlopen(req, timeout=self._timeout) as resp:
             resp.read()
         return True
@@ -358,7 +358,7 @@ class SpoolmanClient:
                         spool['location'] = location
                 except Exception:
                     continue
-            if self._debug >= 1:
+            if self._debug >= 3:
                 logger.info("spoolman: spool_id=%s location=%s",
                             spool_id, location)
         return ok
@@ -401,7 +401,7 @@ class SpoolmanClient:
                         spool['location'] = ""
                 except Exception:
                     continue
-            if self._debug >= 1:
+            if self._debug >= 3:
                 logger.info("spoolman: spool_id=%s location cleared", spool_id)
         return ok
 
@@ -425,9 +425,9 @@ class SpoolmanClient:
         if self._cache_ttl > 0 and uid_norm in self._cache:
             spool, expiry = self._cache[uid_norm]
             if time.monotonic() < expiry:
-                if self._debug >= 2:
+                if self._debug >= 3:
                     spool_id = spool.get('id')
-                    logger.debug(
+                    logger.info(
                         "spoolman: cache hit uid=%s → spool_id=%s", uid_hex, spool_id)
                 return spool
             # Expired — remove stale entry
@@ -445,7 +445,7 @@ class SpoolmanClient:
             if detail is not None:
                 spool = detail
 
-        if self._debug >= 1:
+        if self._debug >= 3:
             if spool_id is not None:
                 logger.info("spoolman: uid=%s → spool_id=%s", uid_hex, spool_id)
             else:
@@ -490,5 +490,5 @@ class SpoolmanClient:
     def clear_cache(self):
         """Flush all cached UID → spool_id mappings."""
         self._cache.clear()
-        if self._debug >= 2:
-            logger.debug("spoolman: cache cleared")
+        if self._debug >= 3:
+            logger.info("spoolman: cache cleared")

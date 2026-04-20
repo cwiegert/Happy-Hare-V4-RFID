@@ -13,9 +13,17 @@
 # Dedicated logger for all NFC gate modules.
 #
 # All nfc_gate / nfc_gates output goes to nfc_reader.log (same directory as
-# klippy.log).  Operational messages that call info()/warning()/error() also
-# go to klippy.log.  Optional UI console output is configured by NFC_manager
-# after reading printer.cfg.
+# klippy.log).  WARNING and ERROR records automatically also appear in
+# klippy.log via _KlippyForwardHandler.  INFO and DEBUG stay in nfc_reader.log
+# only.  Optional UI console output is configured by NFC_manager after reading
+# printer.cfg.
+#
+# Debug levels (set via debug = N in printer.cfg):
+#   0  none           — nothing logged anywhere
+#   1  errors         — ERROR  → nfc_reader.log + klippy.log
+#   2  warnings       — WARNING+ → nfc_reader.log + klippy.log  (default)
+#   3  integration    — Spoolman / Happy Hare events → nfc_reader.log only
+#   4  trace          — full poll + driver detail → nfc_reader.log only
 #
 # Usage (from any module in this package):
 #   from .log import logger           # inside nfc_gates/
@@ -264,6 +272,24 @@ class _DateRotatingFileHandler(logging.FileHandler):
             pass
 
 
+class _KlippyForwardHandler(logging.Handler):
+    """Forward WARNING and ERROR records to klippy.log (the root logger).
+
+    Attached to the nfc_gate logger so that any logger.warning() or
+    logger.error() call anywhere in the nfc_gates package automatically
+    appears in klippy.log without requiring explicit log_both() calls.
+    INFO and DEBUG records stay in nfc_reader.log only.
+    """
+
+    def emit(self, record):
+        if record.levelno < logging.WARNING:
+            return
+        try:
+            logging.getLogger().handle(record)
+        except Exception:
+            self.handleError(record)
+
+
 def _build_logger():
     logger = logging.getLogger(_LOGGER_NAME)
     if logger.handlers:
@@ -275,8 +301,9 @@ def _build_logger():
     fh.setFormatter(_LOG_FORMATTER)
 
     logger.addHandler(fh)
+    logger.addHandler(_KlippyForwardHandler())
     logger.setLevel(logging.DEBUG)
-    logger.propagate = False  # Do not forward to klippy.log / root logger
+    logger.propagate = False
 
     return logger
 
@@ -341,29 +368,24 @@ def configure_console(printer=None, enabled=None, level=None):
     _lg.addHandler(_GCodeConsoleHandler())
 
 
-def log_both(level, msg, *args, **kwargs):
-    """
-    Write a message to the dedicated NFC logger and to Klipper's root logger.
+# Thin wrappers kept for call-site compatibility.
+# WARNING and ERROR automatically reach klippy.log via _KlippyForwardHandler.
+# INFO stays in nfc_reader.log only.
 
-    High-volume trace logging should continue to call logger.debug() directly
-    so it stays in nfc_reader.log only.  Operational info/warning/error
-    messages can call this helper to appear in both nfc_reader.log and
-    klippy.log.
-    """
+def log_both(level, msg, *args, **kwargs):
     getattr(logger, level)(msg, *args, **kwargs)
-    getattr(logging.getLogger(), level)(msg, *args, **kwargs)
 
 
 def info(msg, *args, **kwargs):
-    log_both('info', msg, *args, **kwargs)
+    logger.info(msg, *args, **kwargs)
 
 
 def warning(msg, *args, **kwargs):
-    log_both('warning', msg, *args, **kwargs)
+    logger.warning(msg, *args, **kwargs)
 
 
 def error(msg, *args, **kwargs):
-    log_both('error', msg, *args, **kwargs)
+    logger.error(msg, *args, **kwargs)
 
 
 # Module-level singleton — imported by every nfc_gate* module.
