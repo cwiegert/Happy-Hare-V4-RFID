@@ -9,3 +9,4 @@ Internal engineering references. Not part of the user-facing documentation.
 | [Config Architecture](config-architecture.md) | NFCGateDefaults → NFCGate inheritance, `load_config_prefix`, parameter override model, SpoolmanClient lifecycle |
 | [HH Interaction](hh-interaction.md) | Unidirectional NFC→HH GCode push, HH status polling via `mmu.get_status()`, suspend/resume cycle trace, startup seeding |
 | [Error Handling and Logging](error-logging.md) | `_failed` flag, poll error containment, SpoolmanClient circuit breaker, debug levels 0–4, console output |
+| [Scan-and-Jog Mode](scan-jog-mode.md) | Proposed: watchdog trigger on HH gate_status 0→1, scan timer calls `_poll()` at `scan_interval` with `MMU_TEST_MOVE` jog between attempts, class-level scan lock prevents multi-lane race, rewind via `MMU_UNLOAD restore=0`, print guard, miss count suppressed during scan |
