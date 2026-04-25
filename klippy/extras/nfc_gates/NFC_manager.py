@@ -931,33 +931,10 @@ class NFCGate:
             if hh_spool > 0:
                 self._hh_seed_spool_id  = hh_spool
                 self._hh_seed_available = bool(hh_avail)
-
-                # Reverse-lookup the UID from Spoolman so the NFC cache is
-                # fully populated before the first physical scan.  With
-                # current_uid + current_spool set, polling suspends immediately
-                # (no misses accumulate, no spurious removal fires) and
-                # NFC_GATE_STATUS shows the correct UID right away.
-                if self._spoolman is not None:
-                    uid = self._spoolman.get_uid_for_spool(hh_spool)
-                    if uid:
-                        self._state.current_uid   = uid
-                        self._state.current_spool = hh_spool
-                        self._hh_confirmed_spool  = hh_spool
-                        logger.info(
-                            "nfc_gate: [%s] gate %d — startup cache seeded from "
-                            "HH+Spoolman: spool_id=%d uid=%s",
-                            self._name, self._gate, hh_spool, uid)
-                    else:
-                        logger.info(
-                            "nfc_gate: [%s] gate %d — HH seed: spool_id=%d  "
-                            "gate_status=%s  (no UID in Spoolman — will scan on "
-                            "first poll)",
-                            self._name, self._gate, hh_spool, hh_avail)
-                else:
-                    logger.info(
-                        "nfc_gate: [%s] gate %d — HH seed: spool_id=%d  "
-                        "gate_status=%s  (no Spoolman — will scan on first poll)",
-                        self._name, self._gate, hh_spool, hh_avail)
+                logger.info(
+                    "nfc_gate: [%s] gate %d — HH seed: spool_id=%d  "
+                    "gate_status=%s  (will verify on first physical scan)",
+                    self._name, self._gate, hh_spool, hh_avail)
             else:
                 logger.info(
                     "nfc_gate: [%s] gate %d — HH reports gate empty/unknown "
@@ -1223,21 +1200,22 @@ class NFCGate:
             self._state.miss_count    = 0
             self._hh_confirmed_spool  = None
 
-    def _hh_gate_is_loaded(self):
-        """Return True when HH has a spool assigned to this gate.
+    def _hh_gate_is_available(self):
+        """Return True when HH has this gate marked as available (gate_status >= 1).
 
-        Once HH knows which spool is in the gate (gate_spool_id > 0), NFC has
-        done its job — no need to keep scanning.  Polling resumes automatically
-        when HH clears the gate (eject, endless-spool exhaustion, manual clear).
+        Polling suspends only when HH explicitly marks the gate as available —
+        meaning filament is physically present and confirmed by HH's own sensor.
+        Gates that are merely 'assigned' (spool ID set but status=0) keep
+        polling so NFC can verify the physical tag.
         """
         mmu = self.printer.lookup_object('mmu', None)
         if mmu is None:
             return False
         try:
-            status         = mmu.get_status(self.reactor.monotonic())
-            gate_spool_ids = status.get('gate_spool_id', [])
-            spool_id       = int(gate_spool_ids[self._gate] or -1)
-            return spool_id > 0
+            status      = mmu.get_status(self.reactor.monotonic())
+            gate_status = status.get('gate_status', [])
+            gstat       = int(gate_status[self._gate] or 0)
+            return gstat >= 1
         except (IndexError, TypeError, ValueError):
             return False
 
@@ -1248,12 +1226,14 @@ class NFCGate:
         # in the status before polling stops.  If the tag has never been read
         # (e.g. startup with HH already populated), polling continues until the
         # first successful scan, then suspends.
-        if not self._scan_mode and self._hh_gate_is_loaded() and self._state.current_spool is not None:
+        if (not self._scan_mode
+                and self._hh_gate_is_available()
+                and self._state.current_spool is not None):
             if not self._hh_load_paused:
                 self._hh_load_paused = True
                 logger.info(
-                    "nfc_gate: [%s] gate %d — spool confirmed by NFC and HH; "
-                    "suspending scan until gate is cleared",
+                    "nfc_gate: [%s] gate %d — spool confirmed by NFC; "
+                    "HH gate available — suspending poll until ejected",
                     self._name, self._gate)
             self._state.miss_count = 0
             return
@@ -1400,23 +1380,11 @@ class NFCGate:
                 self._suppress_next_dispatch_spool = None
 
             if not suppress:
-                if self._debug >= 3:
-                    logger.info("nfc_gate: [%s] gate %d — dispatching GCode "
-                                "for event %s", self._name, gate, event_type)
-                # Update the Spoolman location field only when we are actually
-                # dispatching to HH — not on suppressed startup re-seeds.
                 if self._spoolman is not None:
                     if event_type == EVENT_CHANGED and spool is not None:
                         self._spoolman.update_spool_location(spool, gate)
                     elif event_type == EVENT_REMOVED and spool is not None:
                         self._spoolman.clear_spool_location(spool)
-                self._klipper.dispatch(event_type, gate, uid, spool)
-                # Mark HH as confirmed once we dispatch CHANGED — _check_hh_cleared
-                # will not fire until HH has had a chance to process this dispatch.
-                if event_type == EVENT_CHANGED and spool is not None:
-                    self._hh_confirmed_spool = spool
-                elif event_type == EVENT_REMOVED:
-                    self._hh_confirmed_spool = None
 
         if (uid_hex is not None and self._suppress_next_dispatch_uid is not None
                 and uid_hex == self._suppress_next_dispatch_uid):
@@ -1437,6 +1405,8 @@ class NFCGate:
         NFCGate._active_scan_gate = self._gate
         self._scan_mode     = True
         self._scan_mm_total = 0.0
+        gcode = self.printer.lookup_object('gcode')
+        gcode.run_script("MMU_SELECT GATE=%d" % self._gate)
         self._scan_timer    = self.reactor.register_timer(
             self._scan_step_event,
             self.reactor.monotonic() + 0.5)
@@ -1505,17 +1475,11 @@ class NFCGate:
 
     def _run_jog(self, mm):
         gcode = self.printer.lookup_object('gcode')
-        gcode.run_script(
-            "MMU_SELECT GATE=%d\nMMU_TEST_MOVE MOVE=%.2f"
-            % (self._gate, mm))
+        gcode.run_script("MMU_TEST_MOVE MOVE=%.2f" % mm)
 
     def _run_rewind(self):
-        if self._scan_mm_total <= 0.0:
-            return
         gcode = self.printer.lookup_object('gcode')
-        gcode.run_script(
-            "MMU_SELECT GATE=%d\nMMU_TEST_MOVE MOVE=%.2f"
-            % (self._gate, -self._scan_mm_total))
+        gcode.run_script("MMU_UNLOAD restore=0")
 
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -1823,7 +1787,6 @@ class NFCGateManager:
                         self._spoolman.update_spool_location(spool, gate)
                     elif event_type == EVENT_REMOVED and spool is not None:
                         self._spoolman.clear_spool_location(spool)
-                self._klipper.dispatch(event_type, gate, uid, spool)
         elif self._debug >= 4:
             logger.debug("nfc_gates: gate %d — no state change (%r)",
                          i, self._states[i])
