@@ -1405,8 +1405,6 @@ class NFCGate:
         NFCGate._active_scan_gate = self._gate
         self._scan_mode     = True
         self._scan_mm_total = 0.0
-        gcode = self.printer.lookup_object('gcode')
-        gcode.run_script("MMU_SELECT GATE=%d" % self._gate)
         self._scan_timer    = self.reactor.register_timer(
             self._scan_step_event,
             self.reactor.monotonic() + 0.5)
@@ -1475,11 +1473,17 @@ class NFCGate:
 
     def _run_jog(self, mm):
         gcode = self.printer.lookup_object('gcode')
-        gcode.run_script("MMU_TEST_MOVE MOVE=%.2f" % mm)
+        if self._scan_mm_total == 0.0:
+            gcode.run_script("MMU_SELECT GATE=%d\nMMU_TEST_MOVE MOVE=%.2f"
+                             % (self._gate, mm))
+        else:
+            gcode.run_script("MMU_TEST_MOVE MOVE=%.2f" % mm)
 
     def _run_rewind(self):
+        if self._scan_mm_total <= 0.0:
+            return
         gcode = self.printer.lookup_object('gcode')
-        gcode.run_script("MMU_UNLOAD restore=0")
+        gcode.run_script("MMU_TEST_MOVE MOVE=%.2f" % -self._scan_mm_total)
 
     # ─────────────────────────────────────────────────────────────────────────
 
