@@ -1135,6 +1135,7 @@ class NFCGate:
                                     "nfc_gate: [%s] gate %d — gate ejected; "
                                     "resuming poll and clearing NFC cache",
                                     self._name, self._gate)
+                                return self.reactor.monotonic() + 1.0
                             return self.reactor.monotonic() + self._poll_interval
                         # 0→1 edge: arm pending flag and let HH fully settle
                         if prev == 0 and curr == 1:
