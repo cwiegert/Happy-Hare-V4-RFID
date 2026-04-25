@@ -725,6 +725,7 @@ class NFCGate:
         self._scan_mode         = False
         self._scan_mm_total     = 0.0
         self._prev_gate_status  = -1   # -1 = unknown; prevents false trigger on cold start
+        self._scan_pending      = False  # armed on 0→1 edge; fires when HH confirms idle
 
         # delayed-init state
         self._gcode = None
@@ -1126,6 +1127,7 @@ class NFCGate:
                         prev   = self._prev_gate_status
                         self._prev_gate_status = curr
                         if curr == 0:
+                            self._scan_pending = False
                             if self._hh_load_paused:
                                 self._hh_load_paused      = False
                                 self._state.current_uid   = None
@@ -1137,9 +1139,19 @@ class NFCGate:
                                     "resuming poll and clearing NFC cache",
                                     self._name, self._gate)
                             return self.reactor.monotonic() + self._poll_interval
-                        if (prev == 0 and curr == 1
+                        # 0→1 edge: arm pending flag and let HH fully settle
+                        if prev == 0 and curr == 1:
+                            self._scan_pending = True
+                            if self._debug >= 3:
+                                logger.info(
+                                    "nfc_gate: [%s] gate %d — gate loaded; "
+                                    "waiting for HH idle before scan",
+                                    self._name, self._gate)
+                        # Fire scan once HH is idle and gate is confirmed loaded
+                        if (self._scan_pending and curr == 1
                                 and action == 'idle'
                                 and not self._is_printing()):
+                            self._scan_pending = False
                             if NFCGate._active_scan_gate is not None:
                                 if self._debug >= 3:
                                     logger.info(
@@ -1147,9 +1159,12 @@ class NFCGate:
                                         "deferred: gate %d already scanning",
                                         self._name, self._gate,
                                         NFCGate._active_scan_gate)
+                                self._scan_pending = True  # re-arm; retry next tick
                             else:
                                 self._start_scan_mode()
                                 return self.reactor.NEVER
+                        if self._scan_pending:
+                            return self.reactor.monotonic() + self._poll_interval
                 except Exception:
                     pass
 
