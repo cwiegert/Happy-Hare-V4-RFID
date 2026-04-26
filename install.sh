@@ -185,6 +185,8 @@ out = []
 removed_scan_interval = False
 has_scan_poll_interval = any(
     re.match(r'^\s*scan_poll_interval\s*:', line) for line in lines)
+has_scan_settle_time = any(
+    re.match(r'^\s*scan_settle_time\s*:', line) for line in lines)
 
 old_scan_interval_comment = (
     'Seconds between NFC read attempts during scan mode',
@@ -211,12 +213,31 @@ if not has_scan_poll_interval:
         '\n',
         '# Seconds between NFC read attempts while scan-jog is active.  Jog chunk cadence\n',
         '# is calculated automatically from scan_jog_mm / Happy Hare gear_short_move_speed\n',
-        '# plus a small acceleration buffer, so there is no manual move interval to tune.\n',
+        '# plus scan_settle_time, so there is no manual move interval to tune.\n',
         'scan_poll_interval:  0.1\n',
     ]
     inserted = False
     for i, line in enumerate(out):
         if re.match(r'^\s*scan_max_mm\s*:', line):
+            out[i + 1:i + 1] = insert
+            inserted = True
+            changed = True
+            break
+    if not inserted:
+        out.extend(insert)
+        changed = True
+
+if not has_scan_settle_time:
+    insert = [
+        '\n',
+        '# Extra seconds to wait after each scan jog chunk before reading NFC and issuing\n',
+        '# the next chunk.  Lower values reduce time between jogs; raise only if the lane\n',
+        '# MCU needs more time to settle after motion.\n',
+        'scan_settle_time:    0.02\n',
+    ]
+    inserted = False
+    for i, line in enumerate(out):
+        if re.match(r'^\s*scan_poll_interval\s*:', line):
             out[i + 1:i + 1] = insert
             inserted = True
             changed = True
@@ -232,6 +253,8 @@ if changed:
         print('    [migrate] removed deprecated scan_interval from {}'.format(path))
     if not has_scan_poll_interval:
         print('    [migrate] added scan_poll_interval to {}'.format(path))
+    if not has_scan_settle_time:
+        print('    [migrate] added scan_settle_time to {}'.format(path))
 PYEOF
 }
 

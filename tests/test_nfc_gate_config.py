@@ -215,18 +215,24 @@ def test_scan_defaults():
     d = NFCGateDefaults(MockConfig())
     assert d.scan_jog_mm   == 50.0
     assert d.scan_max_mm   == 600.0
+    assert d.scan_poll_interval == 0.1
+    assert d.scan_settle_time == 0.02
     assert d.scan_interval == 2.0
     assert d.scan_enabled  == True
 
 def test_scan_keys_overridden():
     d = NFCGateDefaults(MockConfig({
-        'scan_jog_mm':   25.0,
-        'scan_max_mm':   300.0,
-        'scan_interval': 1.5,
-        'scan_enabled':  False,
+        'scan_jog_mm':        25.0,
+        'scan_max_mm':        300.0,
+        'scan_interval':      1.5,
+        'scan_poll_interval': 0.2,
+        'scan_settle_time':   0.0,
+        'scan_enabled':       False,
     }))
     assert d.scan_jog_mm   == 25.0
     assert d.scan_max_mm   == 300.0
+    assert d.scan_poll_interval == 0.2
+    assert d.scan_settle_time == 0.0
     assert d.scan_interval == 1.5
     assert d.scan_enabled  == False
 
@@ -248,6 +254,13 @@ def test_scan_interval_below_min_raises():
     try:
         NFCGateDefaults(MockConfig({'scan_interval': 0.1}))
         assert False, "Expected error for scan_interval below minval"
+    except (ValueError, Exception):
+        pass
+
+def test_scan_settle_time_below_min_raises():
+    try:
+        NFCGateDefaults(MockConfig({'scan_settle_time': -0.1}))
+        assert False, "Expected error for scan_settle_time below minval"
     except (ValueError, Exception):
         pass
 

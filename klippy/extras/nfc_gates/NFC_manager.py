@@ -595,6 +595,8 @@ class NFCGateDefaults:
                                                    minval=0.5, maxval=60.0)
         self.scan_poll_interval = config.getfloat('scan_poll_interval', 0.1,
                                                    minval=0.1, maxval=5.0)
+        self.scan_settle_time   = config.getfloat('scan_settle_time', 0.02,
+                                                   minval=0., maxval=1.0)
         self.scan_enabled       = config.getboolean('scan_enabled', True)
 
         self._printer = config.get_printer()
@@ -743,6 +745,9 @@ class NFCGate:
         self._scan_poll_interval = config.getfloat('scan_poll_interval',
                                                     d.scan_poll_interval if d else 0.1,
                                                     minval=0.1, maxval=5.0)
+        self._scan_settle_time = config.getfloat('scan_settle_time',
+                                                  d.scan_settle_time if d else 0.02,
+                                                  minval=0., maxval=1.0)
         self._scan_enabled  = config.getboolean('scan_enabled',
                                                  d.scan_enabled if d else True)
         self._scan_timer           = None
@@ -1520,7 +1525,7 @@ class NFCGate:
 
     def _scan_chunk_interval(self, mm):
         """Return the time to wait before issuing the next scan chunk."""
-        return (abs(mm) / self._get_scan_speed()) + 0.10
+        return (abs(mm) / self._get_scan_speed()) + self._scan_settle_time
 
     def _scan_next_event_time(self, mm):
         """Return when it is safe to read after a queued scan chunk."""
@@ -1553,11 +1558,12 @@ class NFCGate:
         if self._debug >= 3:
             logger.info(
                 "nfc_gate: [%s] gate %d scan mode started — "
-                "chunk=%.1fmm max=%.1fmm speed=%.1fmm/s chunk_interval=%.2fs poll=%.2fs",
+                "chunk=%.1fmm max=%.1fmm speed=%.1fmm/s chunk_interval=%.2fs settle=%.2fs poll=%.2fs",
                 self._name, self._gate,
                 self._scan_jog_mm, self._scan_max_mm,
                 self._get_scan_speed(),
                 self._scan_chunk_interval(self._scan_jog_mm),
+                self._scan_settle_time,
                 self._scan_poll_interval)
 
     def _scan_step_event(self, eventtime):
