@@ -312,7 +312,7 @@ def configure(path='', printer=None, console_output=None, console_log_level=None
     """
     Redirect the NFC logger to *path*.
 
-    Called from NFCGateManager.__init__ after reading log_file from config.
+    Called from NFCGate.__init__ after reading log_file from config.
     Replaces the existing FileHandler so the configured path takes effect
     even though the logger was created at import time.
     Expands ~ automatically.  If *path* is a bare filename (no directory

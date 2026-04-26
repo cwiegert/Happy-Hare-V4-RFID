@@ -51,6 +51,15 @@ if [ -L "${KLIPPER_EXTRAS}/nfc_gates.py" ]; then
     rm "${KLIPPER_EXTRAS}/nfc_gates.py"
 fi
 
+# Remove legacy porting-reference symlink if an older install exposed it.
+LEGACY_HH_PORTING="${KLIPPER_EXTRAS}/HH_code - for porting"
+if [ -L "${LEGACY_HH_PORTING}" ]; then
+    echo "Removing legacy HH_code - for porting symlink (not installed at runtime)..."
+    rm "${LEGACY_HH_PORTING}"
+elif [ -e "${LEGACY_HH_PORTING}" ]; then
+    echo "WARNING: ${LEGACY_HH_PORTING} exists but is not a symlink — leaving it untouched."
+fi
+
 echo "Linking nfc_gate.py..."
 ln -sfn "${REPO_DIR}/klippy/extras/nfc_gate.py" "${KLIPPER_EXTRAS}/nfc_gate.py"
 
@@ -312,8 +321,4 @@ echo ""
 echo "  To test a PN532 wired directly to this Pi's GPIO I2C pins:"
 echo "     python3 ~/pn532_scan.py --scan-bus"
 echo "     python3 ~/pn532_scan.py"
-echo ""
-echo "  ── SPI / Pico note ───────────────────────────────────────────────────────"
-echo "  SPI and remote Pico reader configs are work in progress and are not"
-echo "  installed as part of the documented PN532 I2C lane-board path."
 echo ""

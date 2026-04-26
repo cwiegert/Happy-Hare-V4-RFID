@@ -64,9 +64,16 @@ _stub('nfc_gates.pn532_driver',
       PN532Driver=object,
       PN532_COMMAND_GETFIRMWAREVERSION=0x02,
       PN532_COMMAND_SAMCONFIGURATION=0x14,
-      PN532_COMMAND_INLISTPASSIVETARGET=0x4A)
-_stub('nfc_gates.rc522_driver',   RC522Driver=object)
+      PN532_COMMAND_INLISTPASSIVETARGET=0x4A,
+      get_low_level_debug=lambda config, default=False: default,
+      low_level_debug_requested=lambda gcmd: False,
+      low_level_debug_help_lines=lambda command_base: [],
+      run_low_level_debug=lambda *a, **k: False)
 _stub('nfc_gates.spoolman_client', SpoolmanClient=_MockSpoolmanClient)
+
+# Manager tests install different dependency stubs; import a fresh manager copy
+# so pytest collection order cannot leak stubs between files.
+sys.modules.pop('nfc_gates.NFC_manager', None)
 
 from nfc_gates.NFC_manager import GateState, NFCGate
 
@@ -160,7 +167,7 @@ class MockPrinter:
 
 
 def _make_gate(gate=0, scan_jog_mm=50.0, scan_max_mm=200.0,
-               scan_interval=2.0, scan_poll_interval=0.5,
+               scan_poll_interval=0.5,
                scan_settle_time=0.02, scan_enabled=True):
     """Build a minimal NFCGate with scan-jog state, bypassing __init__.
 
@@ -176,7 +183,6 @@ def _make_gate(gate=0, scan_jog_mm=50.0, scan_max_mm=200.0,
     g._poll_interval      = 30.0
     g._scan_jog_mm        = scan_jog_mm
     g._scan_max_mm        = scan_max_mm
-    g._scan_interval      = scan_interval
     g._scan_poll_interval = scan_poll_interval
     g._scan_settle_time   = scan_settle_time
     g._scan_enabled       = scan_enabled

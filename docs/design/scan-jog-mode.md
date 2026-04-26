@@ -127,7 +127,8 @@ All added to `[nfc_gate]` (and overridable per `[nfc_gate laneN]`):
 |---|---|---|
 | `scan_jog_mm` | `50.0` | Filament advance per step (mm) |
 | `scan_max_mm` | `600` | Maximum total advance before abort and rewind |
-| `scan_interval` | `2.0` | Seconds between NFC poll attempts during scan |
+| `scan_poll_interval` | `0.1` | Minimum seconds between NFC reads during scan |
+| `scan_settle_time` | `0.02` | Extra buffer after each jog chunk before reading |
 | `scan_enabled` | `True` | Master switch — set False to disable scan mode entirely |
 
 ---
@@ -208,7 +209,8 @@ def _start_scan_mode(self):
         logger.info(
             "nfc_gate: [%s] gate %d scan mode started — "
             "step=%.1fmm max=%.1fmm interval=%.1fs",
-            self._name, self._gate, self._scan_jog_mm, self._scan_max_mm, self._scan_interval)
+            self._name, self._gate, self._scan_jog_mm, self._scan_max_mm,
+            self._scan_poll_interval)
 ```
 
 ### Scan step (the loop body)
@@ -243,7 +245,7 @@ def _scan_step_event(self, eventtime):
         logger.info(
             "nfc_gate: [%s] scan mode: no tag — jogged %.1fmm (total %.1fmm)",
             self._name, self._scan_jog_mm, self._scan_mm_total)
-    return eventtime + self._scan_interval  # ← reschedules next attempt
+    return self._scan_next_event_time(chunk)
 ```
 
 ### Tag found
@@ -320,7 +322,7 @@ def _run_rewind(self):
 | Timer | Created | Destroyed | Interval |
 |---|---|---|---|
 | `_poll_timer` | `__init__` (parked at NEVER) | `_handle_disconnect` | `poll_interval` (30 s default) |
-| `_scan_timer` | `_start_scan_mode` | `_scan_step_event` returns NEVER | `scan_interval` (2 s default) |
+| `_scan_timer` | `_start_scan_mode` | `_scan_step_event` returns NEVER | chunk time plus settle buffer |
 
 The scan timer is created anew on each scan entry. There is no need to deregister it explicitly — returning `reactor.NEVER` from `_scan_step_event` parks it permanently. `_scan_mode = False` is the canonical in-flight abort flag; any path that sets it to False before the next tick will cause the next `_scan_step_event` call to immediately return `NEVER`.
 
