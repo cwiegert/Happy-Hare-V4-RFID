@@ -2,10 +2,10 @@
 
 > Plug an NFC reader into each filament gate. Load a tagged spool. Happy Hare updates automatically.
 
-Each filament gate on your EMU gets a PN532 NFC reader wired to its EBB42. When you drop in a spool that has an NFC tag, the reader sees it, finds the matching entry in Spoolman, and tells Happy Hare which spool is in which gate — no console commands, no manual selection.
+Each filament gate on your EMU gets a PN532 NFC reader wired to its EBB42. When you load a spool, the system jogs the filament in small steps until the NFC tag rotates into read range, finds the matching entry in Spoolman, rewinds to the parked position, and tells Happy Hare which spool is in which gate — no console commands, no manual selection.
 
 ```
-Spool with NFC tag → PN532 on EBB42 → Klipper I2C → Spoolman lookup → Happy Hare gate map
+Load spool → HH parks filament → scan-jog rotates spool → tag in range → Spoolman lookup → Happy Hare gate map
 ```
 
 ---
@@ -34,6 +34,34 @@ Spool with NFC tag → PN532 on EBB42 → Klipper I2C → Spoolman lookup → Ha
 | 7 | [Troubleshooting](docs/i2c-pn532/troubleshooting.md) | Failure patterns and fixes |
 | 8 | [How It Works](docs/shared/how-it-works.md) | Boot sequence, poll flow, system layers, macro events |
 | 9 | [Expert: Low-Level I2C Debug](docs/shared/expert-low-level-i2c-debugging.md) | Manual PN532 bus commands |
+
+---
+
+## Scan-and-Jog: How the Tag Gets Read
+
+NFC tags sit on the spool hub. When Happy Hare parks filament at the gate the hub face may not be aligned over the antenna — the tag could be facing any direction. Scan-and-jog solves this automatically.
+
+**Automatic path (normal operation):**
+1. Happy Hare finishes loading filament and sets gate_status → 1 (parked)
+2. NFC_Manager detects the 0→1 edge on the next poll tick
+3. The scan-jog loop starts — filament advances in `scan_jog_mm` steps (default 50 mm), reading the NFC tag after each step
+4. The moment the tag rotates into read range, the spool is identified through Spoolman and dispatched to Happy Hare
+5. The filament rewinds to the parked position via `MMU_UNLOAD restore=0`
+
+**Manual trigger:** If the automatic trigger didn't fire (or you want to retry), run:
+```gcode
+NFC_GATE GATE=0 JOG_SCAN=1
+```
+This runs the exact same sequence with the same precondition checks (HH idle, not printing, no other gate scanning).
+
+**Configurable per lane** — see [Configuration Reference](docs/shared/configuration.md):
+
+| Key | Default | Effect |
+|---|---|---|
+| `scan_enabled` | `True` | Master switch — set `False` to disable automatic scan-jog |
+| `scan_jog_mm` | `50.0` | Filament advance per step (mm) |
+| `scan_max_mm` | `600.0` | Maximum total advance before abort and rewind |
+| `scan_interval` | `2.0` | Seconds between NFC reads during scan |
 
 ---
 
@@ -109,10 +137,11 @@ These are the commands you'll actually use at the Fluidd/Mainsail console:
 
 ```gcode
 NFC_GATE_STATUS                    ; see all gates at a glance
-NFC_GATE GATE=0 SCAN=1         ; read a tag and show its UID
-NFC_GATE GATE=0 POLL=1         ; full cycle: read → Spoolman → Happy Hare
-NFC_GATE GATE=0 READ=1         ; start automatic background polling
-NFC_GATE GATE=0 READ=0         ; stop polling
+NFC_GATE GATE=0 SCAN=1             ; read a tag and show its UID
+NFC_GATE GATE=0 POLL=1             ; full cycle: read → Spoolman → Happy Hare
+NFC_GATE GATE=0 JOG_SCAN=1         ; start scan-jog (same as automatic pre-load trigger)
+NFC_GATE GATE=0 READ=1             ; start automatic background polling
+NFC_GATE GATE=0 READ=0             ; stop polling
 ```
 
 See [Commands & Macros](docs/shared/klipper-functions.md) for everything, including how to test the Happy Hare handoff without hardware.

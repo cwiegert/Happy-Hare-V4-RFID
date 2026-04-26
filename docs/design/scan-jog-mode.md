@@ -51,6 +51,8 @@ Initialization value for `_prev_gate_status` is `-1` (unknown). This prevents a 
 
 When the gate is empty the poll tick checks only a Python dict — no I2C, no HTTP, no GCode. The existing poll interval (default 30 s) is adequate for detecting the load event; the user has already spent several seconds manually inserting filament before HH parks it.
 
+**Manual trigger:** `NFC_GATE GATE=N JOG_SCAN=1` bypasses the edge-detection path and enters scan mode on demand. It runs the same precondition checks (not printing, HH idle, no other gate scanning, reader healthy) and calls `_start_scan_mode()` directly. This is the correct recovery path when the automatic 0→1 trigger was missed or `scan_enabled` is False.
+
 ---
 
 ## Gate Context and Scan Lock

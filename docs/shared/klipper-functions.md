@@ -14,6 +14,7 @@ This is the day-to-day reference for operating the NFC gate reader from the Flui
 | `NFC_GATE GATE=<n> STATUS=1` | Show one gate's state |
 | `NFC_GATE GATE=<n> INIT=1` | Initialize (or re-initialize) the PN532 reader |
 | `NFC_GATE GATE=<n> SCAN=1` | One raw read — shows UID, no Spoolman lookup |
+| `NFC_GATE GATE=<n> JOG_SCAN=1` | Start scan-jog sequence (same as automatic pre-load trigger) |
 | `NFC_GATE GATE=<n> POLL=1` | Full cycle: read → Spoolman → Happy Hare |
 | `NFC_GATE GATE=<n> APPLY=1` | Force cached spool assignment to Happy Hare |
 | `NFC_GATE GATE=<n> CLEAR_CACHE=1` | Clear cached spool, force fresh Spoolman lookup |
@@ -155,6 +156,44 @@ NFC_GATE GATE=0 SCAN=1
 - Getting a UID to register in Spoolman
 - Confirming a reader can physically see a tag
 - Checking whether a wiring or mode problem is fixed
+
+---
+
+### `NFC_GATE GATE=<n> JOG_SCAN=1`
+
+Starts the scan-and-jog sequence on demand, identical to the automatic pre-load trigger that fires when Happy Hare parks filament at the gate.
+
+```gcode
+NFC_GATE GATE=0 JOG_SCAN=1
+```
+
+**What it does:** Selects the gate, then jogs the filament forward in `scan_jog_mm` increments, reading the NFC tag after each step. When the tag is found it rewinds to the parked position via `MMU_UNLOAD restore=0`. If `scan_max_mm` is reached without a read it rewinds and exits scan mode.
+
+**Preconditions** (same as the automatic path — the command checks all of these and reports a plain-language error if any fail):
+
+| Check | What it guards |
+|---|---|
+| PN532 not in failed state | Reader must have initialised successfully |
+| No active print | Scan cannot move filament during a print |
+| Happy Hare `action == idle` | HH must not be loading, unloading, or homing |
+| No other gate currently scanning | Only one gate may hold the MMU at a time |
+
+**When to use:**
+- Filament was loaded manually and the automatic trigger didn't fire (e.g. `scan_enabled: False`, or the 0→1 edge was missed)
+- Retrying a scan after a failed automatic attempt
+- Testing scan-jog behaviour without physically reloading filament
+
+Expected success output:
+```
+NFC_GATE[lane0]: scan-jog started for gate 0 (step=50mm  max=600mm  interval=2.0s)
+NFC Gate[0] - moved 50.0mm  total 50.0mm / 600.0mm
+NFC Gate[0]: rewinding 50.0mm
+```
+
+If a precondition fails:
+```
+NFC_GATE[lane0]: Happy Hare is busy (action=loading) — wait for idle before starting scan-jog
+```
 
 ---
 

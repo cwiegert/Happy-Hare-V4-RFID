@@ -761,6 +761,7 @@ class NFCGate:
             "  NFC_GATE GATE=%d STATUS=1  - show this gate state" % self._gate,
             "  NFC_GATE GATE=%d INIT=1    - re-run reader init" % self._gate,
             "  NFC_GATE GATE=%d SCAN=1    - scan hardware once, no Spoolman/HH dispatch" % self._gate,
+            "  NFC_GATE GATE=%d JOG_SCAN=1 - start scan-jog (same as automatic pre-load trigger)" % self._gate,
             "  NFC_GATE GATE=%d POLL=1    - run one full NFC_Manager poll for this gate" % self._gate,
             "  NFC_GATE GATE=%d APPLY=1   - send cached spool to Happy Hare now" % self._gate,
             "  NFC_GATE GATE=%d CLEAR_CACHE=1 - clear cached spool lookup, no HH dispatch" % self._gate,
@@ -885,6 +886,9 @@ class NFCGate:
             return
         if gcmd.get_int("SCAN", 0):
             self._manual_scan(gcmd)
+            return
+        if gcmd.get_int("JOG_SCAN", 0):
+            self._manual_jog_scan(gcmd)
             return
         if gcmd.get_int("CLEAR_CACHE", 0):
             self._clear_spool_cache(gcmd)
@@ -1388,6 +1392,71 @@ class NFCGate:
 
     # ── Scan-and-jog mode ────────────────────────────────────────────────────
 
+    def _manual_jog_scan(self, gcmd):
+        """Start the scan-and-jog sequence on demand, identical to an automatic
+        pre-load trigger.
+
+        The automatic path fires when Happy Hare reports a 0→1 gate_status edge
+        (filament loaded), HH is idle, and no print is active.  This command
+        replicates those exact precondition checks and, when they all pass,
+        enters scan-jog mode the same way — pausing the periodic poll timer and
+        scheduling the first scan step.
+
+        Preconditions (same as the automatic path):
+          - PN532 reader is not in a failed state
+          - No print is active
+          - Happy Hare action is 'idle'
+          - No other gate is already running a scan
+
+        If any condition is not met the command responds with a plain-language
+        explanation and does nothing.  On success it responds with the
+        configured step/max/interval values so the user can track progress.
+        """
+        if self._failed:
+            gcmd.respond_info(
+                "NFC_GATE[%s]: reader failed — run NFC_GATE GATE=%d INIT=1 first"
+                % (self._name, self._gate))
+            return
+        if self._is_printing():
+            gcmd.respond_info(
+                "NFC_GATE[%s]: print is active — cannot start scan-jog while printing"
+                % self._name)
+            return
+        mmu = self.printer.lookup_object('mmu', None)
+        if mmu is not None:
+            try:
+                action = mmu.get_status(
+                    self.reactor.monotonic()).get('action', '').lower()
+                if action != 'idle':
+                    gcmd.respond_info(
+                        "NFC_GATE[%s]: Happy Hare is busy (action=%s) — "
+                        "wait for idle before starting scan-jog"
+                        % (self._name, action))
+                    return
+            except Exception:
+                pass
+        if NFCGate._active_scan_gate is not None:
+            gcmd.respond_info(
+                "NFC_GATE[%s]: gate %d is already scanning — "
+                "only one gate may scan at a time"
+                % (self._name, NFCGate._active_scan_gate))
+            return
+        if self._scan_mode:
+            gcmd.respond_info(
+                "NFC_GATE[%s]: scan-jog already in progress for this gate"
+                % self._name)
+            return
+        # Pause the periodic poll timer for the scan duration, mirroring what
+        # _poll_timer_event does when it returns reactor.NEVER to hand off to
+        # the scan-step timer.
+        self.reactor.update_timer(self._poll_timer, self.reactor.NEVER)
+        self._start_scan_mode()
+        gcmd.respond_info(
+            "NFC_GATE[%s]: scan-jog started for gate %d "
+            "(step=%.0fmm  max=%.0fmm  interval=%.1fs)"
+            % (self._name, self._gate,
+               self._scan_jog_mm, self._scan_max_mm, self._scan_interval))
+
     def _is_printing(self):
         ps = self.printer.lookup_object('print_stats', None)
         if ps is None:
@@ -1482,16 +1551,14 @@ class NFCGate:
     def _run_jog(self, mm):
         gcode = self.printer.lookup_object('gcode')
         if self._scan_mm_total == 0.0:
-            gcode.run_script("MMU_SELECT GATE=%d\nMMU_TEST_MOVE MOVE=%.2f QUIET=1"
+            gcode.run_script("MMU_SELECT_GATE GATE=%d\nMMU_TEST_MOVE MOVE=%.2f QUIET=1"
                              % (self._gate, mm))
         else:
             gcode.run_script("MMU_TEST_MOVE MOVE=%.2f QUIET=1" % mm)
 
     def _run_rewind(self):
-        if self._scan_mm_total <= 0.0:
-            return
         gcode = self.printer.lookup_object('gcode')
-        gcode.run_script("MMU_TEST_MOVE MOVE=%.2f QUIET=1" % -self._scan_mm_total)
+        gcode.run_script("MMU_SELECT_GATE GATE=%d\nMMU_UNLOAD restore=0" % self._gate)
 
     # ─────────────────────────────────────────────────────────────────────────
 

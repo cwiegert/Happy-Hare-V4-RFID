@@ -65,6 +65,50 @@ The `(uid, spool_id)` combination check means that if the same physical tag is r
 
 ---
 
+## Scan-and-Jog Flow
+
+When a spool is loaded, the NFC tag is on the hub face — it may be pointing any direction. The scan-jog loop rotates the spool until the tag comes within read range of the PN532 antenna.
+
+### Trigger
+
+The poll tick runs the gate-status edge check on every cycle. When all conditions are met, scan mode starts and the poll timer parks itself at `NEVER` for the duration.
+
+```
+_poll_timer_event  (every poll_interval seconds)
+  └─ reads HH gate_status[N]  (Python dict — no I2C)
+  └─ gate_status was 0, is now 1?
+       AND  HH action == idle?
+       AND  not printing?
+       AND  no other gate currently scanning?
+         └─ YES → _start_scan_mode()  →  poll timer parks at NEVER
+         └─ NO  → continue normal polling
+```
+
+Initialization sets `_prev_gate_status = -1` so a cold-start with status already at 1 (from a previous session) does not trigger scan mode — only a fresh 0→1 transition fires it.
+
+### Scan loop
+
+```
+_scan_step_event  (every scan_interval seconds, default 2 s)
+  └─ print started?  →  rewind and exit
+  └─ _poll()
+       └─ tag found?  →  _finish_scan()
+            └─ dispatch spool to Happy Hare (already done inside _poll)
+            └─ MMU_SELECT_GATE GATE=N + MMU_UNLOAD restore=0  (rewind to parked)
+            └─ resume poll timer
+  └─ scan_mm_total >= scan_max_mm?  →  rewind and exit (no tag found)
+  └─ MMU_SELECT_GATE GATE=N + MMU_TEST_MOVE MOVE=scan_jog_mm  (advance one step)
+  └─ reschedule in scan_interval seconds
+```
+
+`_poll()` during a scan step is identical to a normal poll — I2C read, Spoolman lookup, `GateState.process_read`, macro dispatch. The only difference is that `GateState.miss_count` does not increment on a no-read during scan (a blank read while the spool rotates is not an absence event).
+
+### Class-level scan lock
+
+All lane instances share one class variable, `NFCGate._active_scan_gate`. Because Klipper's reactor is single-threaded, reads and writes are atomic with respect to timer callbacks — no mutex needed. Only one gate may scan at a time; a second gate that detects a 0→1 edge while the lock is held re-arms its pending flag and retries on the next poll tick.
+
+---
+
 ## System Layers
 
 Each layer owns one responsibility and must not reach across the boundary.
