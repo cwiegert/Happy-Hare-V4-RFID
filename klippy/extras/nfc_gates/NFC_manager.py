@@ -1514,7 +1514,12 @@ class NFCGate:
                   self._scan_mm_total, self._scan_max_mm))
         logger.info(msg)
         self._console(msg)
-        return eventtime + self._scan_interval
+        # Schedule next read relative to now (jog-complete), not eventtime
+        # (step-start).  _run_jog blocks until the move is physically done, so
+        # monotonic() here is the true jog-end timestamp.  Using eventtime would
+        # shrink the settle window by however long the jog took, potentially
+        # firing the NFC read while the spool is still decelerating.
+        return self.reactor.monotonic() + self._scan_interval
 
     def _finish_scan(self):
         self._scan_mode = False
@@ -1550,11 +1555,15 @@ class NFCGate:
 
     def _run_jog(self, mm):
         gcode = self.printer.lookup_object('gcode')
+        # M400 (wait for moves) is appended so gcode.run_script() does not
+        # return until the stepper has physically stopped.  Without it,
+        # run_script returns as soon as the move is queued and the scan_interval
+        # settle timer starts while the spool is still moving.
         if self._scan_mm_total == 0.0:
-            gcode.run_script("MMU_SELECT_GATE GATE=%d\nMMU_TEST_MOVE MOVE=%.2f QUIET=1"
+            gcode.run_script("MMU_SELECT_GATE GATE=%d\nMMU_TEST_MOVE MOVE=%.2f QUIET=1\nM400"
                              % (self._gate, mm))
         else:
-            gcode.run_script("MMU_TEST_MOVE MOVE=%.2f QUIET=1" % mm)
+            gcode.run_script("MMU_TEST_MOVE MOVE=%.2f QUIET=1\nM400" % mm)
 
     def _run_rewind(self):
         gcode = self.printer.lookup_object('gcode')
