@@ -56,7 +56,8 @@ def get_speed(gate):
     """Return gear_short_move_speed from Happy Hare, or 80 mm/s as fallback."""
     mmu = gate.printer.lookup_object('mmu', None)
     if mmu is not None:
-        speed = getattr(mmu, 'gear_short_move_speed', None)
+        speed = getattr(mmu,'gear_from_spool_speed', None)
+        #speed = getattr(mmu, 'gear_short_move_speed', None)
         if speed is not None:
             try:
                 speed = float(speed)
