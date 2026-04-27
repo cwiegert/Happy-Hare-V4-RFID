@@ -116,16 +116,14 @@ def step_event(gate, eventtime):
     if not gate._scan_mode:
         return gate.reactor.NEVER
 
-    now = gate.reactor.monotonic()
-    if now < gate._scan_next_chunk_time:
-        return gate._scan_next_chunk_time
-
     if is_printing(gate):
         logger.warning(
             "nfc_gate: [%s] scan mode: print started — aborting",
             gate._name)
         gate._rewind_and_exit_scan()
         return gate.reactor.NEVER
+
+    now = gate.reactor.monotonic()
 
     try:
         tag_found = gate._poll()
@@ -144,17 +142,20 @@ def step_event(gate, eventtime):
         gate._rewind_and_exit_scan()
         return gate.reactor.NEVER
 
-    remaining = gate._scan_max_mm - gate._scan_mm_total
-    chunk = min(gate._scan_jog_mm, remaining)
-    gate._run_jog(chunk)
-    gate._scan_mm_total += chunk
-    gate._scan_next_chunk_time = next_event_time(gate, chunk)
-    msg = ("NFC Gate[%d] - moved %.1fmm  total %.1fmm / %.1fmm"
-           % (gate._gate, chunk, gate._scan_mm_total, gate._scan_max_mm))
-    logger.info(msg)
-    gate._console(msg)
+    # Only queue the next jog when the previous move is estimated complete.
+    # Poll continues at scan_poll_interval regardless.
+    if now >= gate._scan_next_chunk_time:
+        remaining = gate._scan_max_mm - gate._scan_mm_total
+        chunk = min(gate._scan_jog_mm, remaining)
+        gate._run_jog(chunk)
+        gate._scan_mm_total += chunk
+        gate._scan_next_chunk_time = now + chunk_interval(gate, chunk)
+        msg = ("NFC Gate[%d] - moved %.1fmm  total %.1fmm / %.1fmm"
+               % (gate._gate, chunk, gate._scan_mm_total, gate._scan_max_mm))
+        logger.info(msg)
+        gate._console(msg)
 
-    return gate._scan_next_chunk_time
+    return now + gate._scan_poll_interval
 
 
 def finish(gate):
