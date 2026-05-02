@@ -211,7 +211,7 @@ class GateState:
 #
 # Macros called (define these in printer.cfg / nfc_macros.cfg):
 #
-#   _NFC_SPOOL_CHANGED  GATE=<n>  SPOOL_ID=<id>  UID=<hex>
+#   _NFC_SPOOL_CHANGED  GATE=<n>  SPOOL_ID=<id>  UID=<hex>  [AUTO_CREATED=1]
 #   _NFC_SPOOL_REMOVED  GATE=<n>
 #   _NFC_TAG_NO_SPOOL   GATE=<n>  UID=<hex>
 
@@ -221,11 +221,13 @@ class KlipperInterface:
         self._reactor = reactor
         self._debug = debug
 
-    def dispatch(self, event_type, gate, uid_hex, spool_id, meta=None):
+    def dispatch(self, event_type, gate, uid_hex, spool_id, meta=None,
+                 auto_created=False):
         """Schedule a GCode macro call for the given gate event."""
         self._reactor.register_callback(
-            lambda e, et=event_type, g=gate, u=uid_hex, s=spool_id, m=meta:
-                self._run_gcode(et, g, u, s, m))
+            lambda e, et=event_type, g=gate, u=uid_hex, s=spool_id, m=meta,
+                   ac=auto_created:
+                self._run_gcode(et, g, u, s, m, ac))
 
     @staticmethod
     def _macro_value(value):
@@ -233,15 +235,18 @@ class KlipperInterface:
         value = re.sub(r'\s+', '_', value)
         return re.sub(r'[^A-Za-z0-9_#.+-]', '', value)
 
-    def _run_gcode(self, event_type, gate, uid_hex, spool_id, meta=None):
+    def _run_gcode(self, event_type, gate, uid_hex, spool_id, meta=None,
+                   auto_created=False):
         gcode = self._printer.lookup_object('gcode')
         try:
             if event_type == EVENT_CHANGED:
                 if spool_id is not None:
-                    script = "_NFC_SPOOL_CHANGED GATE={} SPOOL_ID={} UID={}".format(
-                        gate, spool_id, uid_hex)
-                    logger.info("nfc_gates: gate %d → spool %d detected (UID %s)",
-                                 gate, spool_id, uid_hex)
+                    script = "_NFC_SPOOL_CHANGED GATE={} SPOOL_ID={} UID={}{}".format(
+                        gate, spool_id, uid_hex,
+                        " AUTO_CREATED=1" if auto_created else "")
+                    logger.info("nfc_gates: gate %d → spool %d detected (UID %s%s)",
+                                 gate, spool_id, uid_hex,
+                                 " [auto-created]" if auto_created else "")
                 else:
                     material = self._macro_value((meta or {}).get('material', ''))
                     color    = self._macro_value((meta or {}).get('color_hex', ''))
@@ -1606,11 +1611,15 @@ class NFCGate:
                             self._name, gate, spool)
                 else:
                     meta = None
+                    auto_created = False
                     if (event_type == EVENT_CHANGED
-                            and self._state.current_spool is DIRECT_METADATA_SPOOL
                             and self._state.current_tag is not None):
-                        meta = self._state.current_tag.meta
-                    self._klipper.dispatch(event_type, gate, uid, spool, meta=meta)
+                        res = self._state.current_tag.resolution or {}
+                        auto_created = isinstance(res, dict) and res.get('path') == 'auto_create'
+                        if self._state.current_spool is DIRECT_METADATA_SPOOL:
+                            meta = self._state.current_tag.meta
+                    self._klipper.dispatch(event_type, gate, uid, spool,
+                                           meta=meta, auto_created=auto_created)
                     if event_type == EVENT_CHANGED and spool is not None:
                         self._hh_confirmed_spool = spool
                     elif event_type == EVENT_REMOVED:

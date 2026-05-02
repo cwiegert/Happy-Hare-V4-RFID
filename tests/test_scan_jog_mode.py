@@ -699,7 +699,7 @@ def test_rewind_and_exit_clears_scan_mode():
 class _DispatchCapture:
     def __init__(self):
         self.calls = []
-    def dispatch(self, event_type, gate, uid, spool, meta=None):
+    def dispatch(self, event_type, gate, uid, spool, meta=None, auto_created=False):
         self.calls.append((event_type, gate, uid, spool, meta))
 
 def test_finish_scan_metadata_direct_dispatches_meta():

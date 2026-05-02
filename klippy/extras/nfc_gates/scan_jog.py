@@ -204,7 +204,13 @@ def finish(gate):
             event_type, g, uid, spool = event
             meta = None
         gate._scan_found_event = None
-        gate._klipper.dispatch(event_type, g, uid, spool, meta=meta)
+        auto_created = False
+        if (event_type == 'changed'
+                and gate._state.current_tag is not None):
+            res = gate._state.current_tag.resolution or {}
+            auto_created = isinstance(res, dict) and res.get('path') == 'auto_create'
+        gate._klipper.dispatch(event_type, g, uid, spool, meta=meta,
+                               auto_created=auto_created)
         if event_type == 'changed' and spool is not None:
             msg = "✅ NFC[%d]: spool %s assigned" % (g, spool)
             info_both(msg)
