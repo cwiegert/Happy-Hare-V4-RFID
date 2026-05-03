@@ -104,7 +104,7 @@ These keys in the base `[nfc_gate]` section are inherited by every `[nfc_gate la
 
 | Setting | Default | Description |
 |---|---|---|
-| `i2c_address` | `36` (`0x24`) | PN532 I2C address as a decimal integer. Only change if you moved the PN532 address pads (A0/A1). All readers on separate buses can stay at the default. |
+| `i2c_address` | `36` (`0x24`) | PN532 I2C address as a decimal integer. The PN532 I2C address is fixed at `0x24` (36) by the chip — leave this at the default. |
 | `i2c_bus` | _(none)_ | Hardware I2C bus identifier on the lane MCU. Must be set in the base section or overridden per lane. |
 
 **Common bus names:**
@@ -114,14 +114,8 @@ These keys in the base `[nfc_gate]` section are inherited by every `[nfc_gate la
 | EBB42 v1.x (PB3/PB4) | `i2c3_PB3_PB4` |
 | SLB (PB10/PB11) | `i2c2_PB10_PB11` |
 
-**I2C address pad table** (change only if using multiple readers on one bus with a multiplexer):
-
-| Pad setting (A1/A0) | Decimal | Hex |
-|---|:---:|:---:|
-| 0/0 | `36` | `0x24` |
-| 0/1 | `37` | `0x25` |
-| 1/0 | `38` | `0x26` |
-| 1/1 | `39` | `0x27` |
+> [!NOTE]
+> The PN532 I2C address is hardwired to `0x24` (decimal `36`). The two pads/jumpers on the breakout board (SEL0/SEL1, sometimes labeled A0/A1) select the **communication protocol** (I2C, SPI, or HSU), not the address. For I2C: SEL0=1, SEL1=0. See the [wiring guide](../i2c-pn532/wiring.md) for the mode selection table.
 
 ---
 

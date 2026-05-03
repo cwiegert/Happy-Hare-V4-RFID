@@ -79,9 +79,13 @@
 #
 # I2C address and wiring
 # ──────────────────────
-# The PN532 default I2C address is 0x24 (7-bit).  Some breakout boards expose
-# address-select pads to choose among 0x24–0x27.  For multiple readers on one
-# bus use a TCA9548A 1-to-8 I2C multiplexer.
+# The PN532 I2C address is fixed at 0x24 (decimal 36) by the chip — it cannot
+# be changed.  The two pads/jumpers on the breakout board (SEL0/SEL1, sometimes
+# labeled A0/A1) select the communication protocol, not the address:
+#
+#   SEL0=1, SEL1=0 → I2C  (address fixed at 0x24)
+#   SEL0=0, SEL1=0 → SPI
+#   SEL0=0, SEL1=1 → HSU/UART
 #
 # EBB42 v1.x I2C1 pins: SCL = PB6, SDA = PB7.
 #
