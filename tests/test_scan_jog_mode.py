@@ -194,7 +194,8 @@ class MockPrinter:
 
 def _make_gate(gate=0, scan_jog_mm=50.0, scan_max_mm=200.0,
                scan_poll_interval=0.5,
-               scan_enabled=True):
+               scan_enabled=True,
+               scan_rewind_buffer_mm=30.0):
     """Build a minimal NFCGate with scan-jog state, bypassing __init__.
 
     Uses object.__new__ to skip Klipper config/I2C setup, then manually
@@ -208,6 +209,7 @@ def _make_gate(gate=0, scan_jog_mm=50.0, scan_max_mm=200.0,
     g._polling            = True
     g._poll_interval      = 30.0
     g._scan_jog_mm        = scan_jog_mm
+    g._scan_rewind_buffer_mm = scan_rewind_buffer_mm
     g._scan_max_mm        = scan_max_mm
     g._scan_poll_interval = scan_poll_interval
     g._scan_enabled       = scan_enabled
@@ -833,9 +835,25 @@ def test_run_rewind_gcode_content():
     g._run_rewind()
     scripts = g.printer.gcode_scripts
     assert len(scripts) == 2
-    assert 'MMU_TEST_MOVE MOVE=-90.00' in scripts[0]
-    assert scripts[1] == 'mmu_check_gate'
+    assert 'MMU_TEST_MOVE MOVE=-70.00' in scripts[0]
+    assert scripts[1] == 'MMU_STEP_UNLOAD_GATE'
     assert 'MMU_UNLOAD' not in scripts[0]
+
+def test_run_rewind_uses_configured_buffer():
+    g = _make_gate(gate=3, scan_rewind_buffer_mm=40.0)
+    g._scan_mm_total = 100.0
+    g._run_rewind()
+    scripts = g.printer.gcode_scripts
+    assert len(scripts) == 2
+    assert 'MMU_TEST_MOVE MOVE=-60.00' in scripts[0]
+    assert scripts[1] == 'MMU_STEP_UNLOAD_GATE'
+
+def test_run_rewind_short_scan_skips_fast_rewind():
+    g = _make_gate(gate=3, scan_rewind_buffer_mm=30.0)
+    g._scan_mm_total = 20.0
+    g._run_rewind()
+    scripts = g.printer.gcode_scripts
+    assert scripts == ['MMU_STEP_UNLOAD_GATE']
 
 def test_rewind_skipped_when_nothing_jogged():
     """_run_rewind must not issue any GCode if scan_mm_total is 0."""

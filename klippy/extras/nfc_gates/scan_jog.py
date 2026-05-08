@@ -310,6 +310,9 @@ def run_rewind(gate):
     if gate._scan_mm_total <= 0.0:
         return
     gcode = gate.printer.lookup_object('gcode')
-    gcode.run_script("MMU_TEST_MOVE MOVE=%.2f QUIET=1\nM400"
-                     % (-(gate._scan_mm_total - 10)))
-    gcode.run_script("mmu_check_gate")
+    buffer_mm = max(0.0, getattr(gate, '_scan_rewind_buffer_mm', 30.0))
+    fast_rewind = gate._scan_mm_total - buffer_mm
+    if fast_rewind > 0.0:
+        gcode.run_script("MMU_TEST_MOVE MOVE=%.2f QUIET=1\nM400"
+                         % (-fast_rewind))
+    gcode.run_script("MMU_STEP_UNLOAD_GATE")
