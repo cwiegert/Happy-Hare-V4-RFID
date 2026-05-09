@@ -114,6 +114,24 @@ def sync_spoolman_before_scan(gate):
             gate._name, gate._gate, e)
 
 
+def clear_hh_gate_cache(gate):
+    """Clear stale HH gate metadata (spool, color, material) before scan-jog."""
+    gcode = gate.printer.lookup_object('gcode', None)
+    if gcode is None:
+        return
+    try:
+        if gate._debug >= 3:
+            logger.info(
+                "nfc_gate: [%s] gate %d scan mode — clearing HH gate cache "
+                "before scan-jog",
+                gate._name, gate._gate)
+        gcode.run_script("_NFC_GATE_CLEAR_CACHE GATE=%d" % gate._gate)
+    except Exception as e:
+        logger.warning(
+            "nfc_gate: [%s] gate %d scan mode — _NFC_GATE_CLEAR_CACHE failed: %s",
+            gate._name, gate._gate, e)
+
+
 def get_active_gate(gate):
     """Return Happy Hare's currently selected gate, or -1 if unavailable."""
     hh = gate._read_hh_status()
@@ -168,6 +186,7 @@ def start(gate, max_mm=None):
     gate._hh_load_paused = False
     gate._scan_gate_selected = False  # deferred to first jog (must run from timer, not GCode handler)
 
+    clear_hh_gate_cache(gate)
     sync_spoolman_before_scan(gate)
 
     gate._scan_timer = gate.reactor.register_timer(
