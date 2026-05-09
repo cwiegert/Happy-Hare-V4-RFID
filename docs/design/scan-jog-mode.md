@@ -165,16 +165,21 @@ def start(gate):
     gate._hh_seed_spool_id = None     # clear startup seed — scan must re-read
     gate._hh_seed_available = False
     gate._scan_found_event = None
+    gate._state.current_uid   = None  # force changed event on first read
+    gate._state.current_spool = None
 
-    # MMU_SELECT prints the gate map on every call — issue it once here
-    # rather than on each jog step.
-    gcode = gate.printer.lookup_object('gcode')
-    gcode.run_script("MMU_SELECT GATE=%d" % gate._gate)
+    # 1. Clear stale spool/color/material from the HH local gate map.
+    # 2. Push that cleared state to Spoolman so the spool is no longer
+    #    shown as "at MMU Gate N" while the scan jog runs.
+    clear_hh_gate_cache(gate)        # _NFC_GATE_CLEAR_CACHE GATE=N
+    sync_spoolman_before_scan(gate)  # MMU_SPOOLMAN SYNC=1 QUIET=1
 
     gate._scan_timer = gate.reactor.register_timer(
         gate._scan_step_event,
         gate.reactor.monotonic())
 ```
+
+**Pre-scan clearing sequence:**  `clear_hh_gate_cache` issues `_NFC_GATE_CLEAR_CACHE GATE=N`, which resets the HH local gate map entry to `SPOOLID=-1 NAME=Unknown MATERIAL=Unknown COLOR=FFFFFF55`. `sync_spoolman_before_scan` then pushes that cleared state to Spoolman via `MMU_SPOOLMAN SYNC=1`, so the spool's location field in Spoolman is vacated before any jog move happens. When the scan succeeds, `_NFC_SPOOL_CHANGED` fires the next `MMU_SPOOLMAN SYNC=1` with the newly identified spool.
 
 ### `step_event(gate, eventtime)` — the loop body
 
