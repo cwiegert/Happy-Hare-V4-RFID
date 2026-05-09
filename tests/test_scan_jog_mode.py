@@ -686,6 +686,21 @@ def test_scan_starts_without_immediate_jog():
     assert g._scan_mm_total == 0.0
     assert g._scan_next_chunk_time == pytest_approx(100.0)
 
+def test_start_scan_clears_hh_gate_cache_before_spoolman_sync():
+    """scan start must call _NFC_GATE_CLEAR_CACHE before MMU_SPOOLMAN SYNC."""
+    g = _make_gate(gate=2)
+    g._start_scan_mode()
+    scripts = g.printer.gcode_scripts
+    clear_idx = next(
+        (i for i, s in enumerate(scripts) if '_NFC_GATE_CLEAR_CACHE GATE=2' in s),
+        None)
+    sync_idx = next(
+        (i for i, s in enumerate(scripts) if 'MMU_SPOOLMAN SYNC=1' in s),
+        None)
+    assert clear_idx is not None, "_NFC_GATE_CLEAR_CACHE GATE=2 not called on scan start"
+    assert sync_idx  is not None, "MMU_SPOOLMAN SYNC=1 not called on scan start"
+    assert clear_idx < sync_idx,  "cache clear must run before Spoolman sync"
+
 def test_scan_step_issues_one_chunk_when_due():
     """No tag + due chunk issues scan_jog_mm, not the full scan distance."""
     g = _make_gate(gate=1, scan_jog_mm=50.0, scan_max_mm=200.0,
