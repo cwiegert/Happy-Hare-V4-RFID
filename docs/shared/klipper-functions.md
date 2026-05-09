@@ -169,6 +169,12 @@ NFC GATE=0 JOG_SCAN=1
 
 **What it does:** Selects the gate, then jogs the filament forward in `scan_jog_mm` increments, reading the NFC tag after each step. When the tag is found it rewinds toward the parked position, leaves `scan_rewind_buffer_mm` for Happy Hare's final gate parking step, and runs `_MMU_STEP_UNLOAD_GATE`. If the lane's Happy Hare Bowden calibration length is reached without a read, it follows the same rewind-and-park path and exits scan mode.
 
+`HH_SYNC=0` skips the pre-scan `MMU_SPOOLMAN SYNC=1` call. Use it when scan-jog is launched from a Happy Hare extension hook, for example:
+
+```gcode
+NFC GATE=0 JOG_SCAN=1 HH_SYNC=0
+```
+
 **Preconditions** (same as the automatic path — the command checks all of these and reports a plain-language error if any fail):
 
 | Check | What it guards |
@@ -382,11 +388,11 @@ Parameters:
 
 Default behavior:
 ```gcode
-MMU_GATE_MAP GATE={gate} SPOOLID=-1 AVAILABLE=0 SYNC=1 QUIET=1
+MMU_GATE_MAP GATE={gate} SPOOLID=-1 AVAILABLE=1 SYNC=1 QUIET=1
 MMU_GATE_MAP GATE={gate} APPLY=1
 ```
 
-Clears the gate in Happy Hare's gate map. `AVAILABLE=0` marks the gate as empty. `APPLY=1` applies the change immediately.
+Clears only the Spoolman ID in Happy Hare's gate map. `AVAILABLE=1` keeps the gate marked as occupied/available, and `APPLY=1` applies the change immediately.
 
 The macro also checks `printer.mmu.action` — if the MMU is mid-load, unload, or homing, the removal is silently ignored to avoid clearing the gate while filament is actively moving.
 
@@ -404,11 +410,11 @@ Parameters:
 - `GATE` — Happy Hare gate number
 - `UID` — the unrecognized tag UID
 
-Default behavior: prints a message to the console with the UID and instructions to register it.
+Default behavior: prints a message to the console with the UID and instructions to register it, then leaves the Happy Hare gate available with no Spoolman ID.
 
-**Optional:** If you want unregistered tags to clear the Happy Hare gate instead of just logging, add this line to the macro body:
+**Optional:** If you want unregistered tags to clear the Happy Hare gate instead, change the macro body to:
 ```gcode
-MMU_GATE_MAP GATE={gate} SPOOLID=-1 SYNC=1 QUIET=1
+MMU_GATE_MAP GATE={gate} SPOOLID=-1 AVAILABLE=0 SYNC=1 QUIET=1
 ```
 
 ---

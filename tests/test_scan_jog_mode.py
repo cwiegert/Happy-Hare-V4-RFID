@@ -158,8 +158,17 @@ class MockPrintStats:
 
 
 class MockGCmd:
-    def __init__(self):
+    def __init__(self, params=None):
         self.responses = []
+        self.params = params or {}
+
+    def get_int(self, name, default=None, minval=None, maxval=None):
+        value = int(self.params.get(name, default))
+        if minval is not None and value < minval:
+            raise ValueError("below min")
+        if maxval is not None and value > maxval:
+            raise ValueError("above max")
+        return value
 
     def respond_info(self, msg):
         self.responses.append(msg)
@@ -271,6 +280,32 @@ def test_paused_without_nfc_spool_does_not_skip_reader():
 
     assert not skipped
     assert not g._hh_load_paused
+
+def test_uid_only_pauses_poll_while_hh_reports_filament_present():
+    g = _make_gate()
+    g.printer.set_mmu(MockMMU(gate_status=[1], gate_spool_id=[-1]))
+    g._state.current_uid = '04C19F92D32A81'
+    g._state.current_spool = None
+
+    skipped = g._poll_hh_pause_check()
+
+    assert skipped
+    assert g._hh_load_paused
+    assert g._state.miss_count == 0
+
+def test_uid_only_pause_resumes_when_hh_gate_empty():
+    g = _make_gate()
+    g.printer.set_mmu(MockMMU(gate_status=[0], gate_spool_id=[-1]))
+    g._state.current_uid = '04C19F92D32A81'
+    g._state.current_spool = None
+    g._hh_load_paused = True
+
+    skipped = g._poll_hh_pause_check()
+
+    assert not skipped
+    assert not g._hh_load_paused
+    assert g._state.current_uid is None
+    assert g._state.current_spool is None
 
 def test_finish_scan_releases_lock():
     g = _make_gate()
@@ -860,6 +895,18 @@ def test_manual_jog_success_message_has_readable_spacing():
     assert gcmd.responses[-1].startswith(
         '🔍 NFC[test]: scan-jog started for gate 3 (max=')
 
+def test_manual_jog_can_skip_hh_spoolman_sync():
+    g = _make_gate(gate=3)
+    g.printer.set_print_state('standby')
+    g.printer.set_mmu(MockMMU(gate_status=[0, 0, 0, 1], action='idle'))
+    gcmd = MockGCmd({'HH_SYNC': 0})
+
+    g._manual_jog_scan(gcmd)
+
+    assert g._scan_mode
+    assert not any('MMU_SPOOLMAN SYNC=1' in script
+                   for script in g.printer.gcode_scripts)
+
 def test_automatic_jog_blocked_by_unsafe_lane():
     g = _make_gate()
     g.printer.set_print_state('standby')
@@ -1036,6 +1083,7 @@ def test_finish_scan_uid_only_event_dispatches_without_meta():
     g._finish_scan()
 
     assert g._klipper.calls == [('uid_only', 0, '04AABB', None, None)]
+    assert g._hh_load_paused
 
 
 # ── Approx helper (avoids pytest dependency for float comparison) ─────────────
