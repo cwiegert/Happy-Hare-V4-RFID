@@ -168,9 +168,9 @@ def start(gate, max_mm=None, sync_hh=True):
     gate._state.current_uid   = None  # force changed event on first read
     gate._state.current_spool = None
 
-    clear_hh_gate_cache(gate)        # always — MMU_GATE_MAP local update, safe in any context
     if sync_hh:
-        sync_spoolman_before_scan(gate)  # MMU_SPOOLMAN SYNC=1 — skipped when called from HH hook
+        clear_hh_gate_cache(gate)        # _NFC_GATE_CLEAR_CACHE GATE=N
+        sync_spoolman_before_scan(gate)  # MMU_SPOOLMAN SYNC=1 QUIET=1
 
     gate._scan_timer = gate.reactor.register_timer(
         gate._scan_step_event,
@@ -179,15 +179,17 @@ def start(gate, max_mm=None, sync_hh=True):
 
 **Pre-scan clearing sequence:**
 
-`clear_hh_gate_cache` runs unconditionally. It issues `_NFC_GATE_CLEAR_CACHE GATE=N`, which calls `MMU_GATE_MAP GATE=N SPOOLID=-1 NAME=Unknown MATERIAL=Unknown COLOR=FFFFFF00 AVAILABLE=1`. This gives the Mainsail UI a fully-transparent "unknown filament" placeholder (`COLOR=FFFFFF00`) while the scan jog runs. `AVAILABLE=1` keeps the gate marked as loaded so HH does not treat it as empty.
+Both calls are guarded by `sync_hh`. When `sync_hh=False` (called from inside a Happy Hare post-preload hook), both are skipped entirely. Both use `gcode.run_script()` which acquires Klipper's GCode lock — calling either from inside an HH hook deadlocks because HH already holds that lock.
 
-`sync_spoolman_before_scan` runs only when `sync_hh=True`. It pushes the now-cleared HH gate state to Spoolman via `MMU_SPOOLMAN SYNC=1`, vacating the spool's location field in Spoolman before the jog begins. This call is skipped when the scan is triggered from inside a Happy Hare extension hook (`HH_SYNC=0`) because `MMU_SPOOLMAN SYNC=1` makes network calls that are unsafe from inside HH's execution context. `MMU_GATE_MAP` (used by the cache clear) is local-only and safe in all contexts.
+`clear_hh_gate_cache` issues `_NFC_GATE_CLEAR_CACHE GATE=N`, which calls `MMU_GATE_MAP GATE=N SPOOLID=-1 NAME=Unknown MATERIAL=Unknown COLOR=FFFFFF55 AVAILABLE=1`. This gives the Mainsail UI an "unknown filament" placeholder while the scan jog runs. `AVAILABLE=1` keeps the gate marked as loaded so HH does not treat it as empty.
+
+`sync_spoolman_before_scan` pushes the cleared HH gate state to Spoolman via `MMU_SPOOLMAN SYNC=1`, vacating the spool's location field before the jog begins.
 
 | Trigger | `sync_hh` | `clear_hh_gate_cache` | `sync_spoolman_before_scan` |
 |---|---|---|---|
-| Automatic `0→1` poll | `True` | ✅ always | ✅ runs |
-| Manual `NFC JOG_SCAN=1` | `True` | ✅ always | ✅ runs |
-| HH pre-gate hook (`HH_SYNC=0`) | `False` | ✅ always | ❌ skipped |
+| Automatic `0→1` poll | `True` | ✅ runs | ✅ runs |
+| Manual `NFC JOG_SCAN=1` | `True` | ✅ runs | ✅ runs |
+| HH post-preload hook (`HH_SYNC=0`) | `False` | ❌ skipped | ❌ skipped |
 
 When the scan succeeds, `_NFC_SPOOL_CHANGED` issues the next `MMU_SPOOLMAN SYNC=1` with the newly identified spool.
 
