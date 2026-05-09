@@ -158,8 +158,17 @@ class MockPrintStats:
 
 
 class MockGCmd:
-    def __init__(self):
+    def __init__(self, params=None):
         self.responses = []
+        self.params = params or {}
+
+    def get_int(self, name, default=None, minval=None, maxval=None):
+        value = int(self.params.get(name, default))
+        if minval is not None and value < minval:
+            raise ValueError("below min")
+        if maxval is not None and value > maxval:
+            raise ValueError("above max")
+        return value
 
     def respond_info(self, msg):
         self.responses.append(msg)
@@ -194,7 +203,8 @@ class MockPrinter:
 
 def _make_gate(gate=0, scan_jog_mm=50.0, scan_max_mm=200.0,
                scan_poll_interval=0.5,
-               scan_enabled=True):
+               scan_enabled=True,
+               scan_rewind_buffer_mm=30.0):
     """Build a minimal NFCGate with scan-jog state, bypassing __init__.
 
     Uses object.__new__ to skip Klipper config/I2C setup, then manually
@@ -208,6 +218,7 @@ def _make_gate(gate=0, scan_jog_mm=50.0, scan_max_mm=200.0,
     g._polling            = True
     g._poll_interval      = 30.0
     g._scan_jog_mm        = scan_jog_mm
+    g._scan_rewind_buffer_mm = scan_rewind_buffer_mm
     g._scan_max_mm        = scan_max_mm
     g._scan_poll_interval = scan_poll_interval
     g._scan_enabled       = scan_enabled
@@ -218,6 +229,7 @@ def _make_gate(gate=0, scan_jog_mm=50.0, scan_max_mm=200.0,
     g._scan_idle_ready_time = 0.0
     g._scan_found_event     = None
     g._scan_gate_selected   = False
+    g._scan_previous_active_gate = -1
     g._scan_timer         = None
     g._prev_gate_status   = -1
     g._scan_pending      = False
@@ -269,6 +281,32 @@ def test_paused_without_nfc_spool_does_not_skip_reader():
     assert not skipped
     assert not g._hh_load_paused
 
+def test_uid_only_pauses_poll_while_hh_reports_filament_present():
+    g = _make_gate()
+    g.printer.set_mmu(MockMMU(gate_status=[1], gate_spool_id=[-1]))
+    g._state.current_uid = '04C19F92D32A81'
+    g._state.current_spool = None
+
+    skipped = g._poll_hh_pause_check()
+
+    assert skipped
+    assert g._hh_load_paused
+    assert g._state.miss_count == 0
+
+def test_uid_only_pause_resumes_when_hh_gate_empty():
+    g = _make_gate()
+    g.printer.set_mmu(MockMMU(gate_status=[0], gate_spool_id=[-1]))
+    g._state.current_uid = '04C19F92D32A81'
+    g._state.current_spool = None
+    g._hh_load_paused = True
+
+    skipped = g._poll_hh_pause_check()
+
+    assert not skipped
+    assert not g._hh_load_paused
+    assert g._state.current_uid is None
+    assert g._state.current_spool is None
+
 def test_finish_scan_releases_lock():
     g = _make_gate()
     g._start_scan_mode()
@@ -307,6 +345,62 @@ def test_finish_holds_lock_until_rewind_check_gate_runs():
 
     assert observed == [2]
     assert NFCGate._active_scan_gate is None
+
+def test_finish_scan_restores_previous_hh_selected_gate():
+    g = _make_gate(gate=3)
+    g.printer.set_mmu(MockMMU(
+        gate_status=[0, 0, 0, 1],
+        gate_spool_id=[-1, -1, -1, -1],
+        active_gate=1))
+    g._start_scan_mode()
+    g._scan_mm_total = 20.0
+
+    g._finish_scan()
+
+    assert g.printer.gcode_scripts[-1] == 'MMU_SELECT GATE=1'
+
+def test_no_tag_scan_restores_previous_hh_selected_gate():
+    g = _make_gate(gate=3)
+    g.printer.set_mmu(MockMMU(
+        gate_status=[0, 0, 0, 1],
+        gate_spool_id=[-1, -1, -1, -1],
+        active_gate=1))
+    g._start_scan_mode()
+    g._scan_mm_total = 20.0
+
+    g._rewind_and_exit_scan()
+
+    assert g.printer.gcode_scripts[-1] == 'MMU_SELECT GATE=1'
+
+def test_finish_scan_restores_previous_hh_selected_gate_after_rewind_error():
+    g = _make_gate(gate=3)
+    g.printer.set_mmu(MockMMU(
+        gate_status=[0, 0, 0, 1],
+        gate_spool_id=[-1, -1, -1, -1],
+        active_gate=1))
+    g._start_scan_mode()
+    g._run_rewind = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+
+    try:
+        g._finish_scan()
+    except RuntimeError:
+        pass
+
+    assert g.printer.gcode_scripts[-1] == 'MMU_SELECT GATE=1'
+
+def test_scan_does_not_restore_when_previous_hh_gate_matches_scan_gate():
+    g = _make_gate(gate=3)
+    g.printer.set_mmu(MockMMU(
+        gate_status=[0, 0, 0, 1],
+        gate_spool_id=[-1, -1, -1, -1],
+        active_gate=3))
+    g._start_scan_mode()
+    g._scan_mm_total = 20.0
+
+    g._finish_scan()
+
+    assert all(script != 'MMU_SELECT GATE=3'
+               for script in g.printer.gcode_scripts)
 
 def test_second_gate_blocked_when_lock_held():
     """When gate 0 holds the lock, gate 1 must not acquire it."""
@@ -627,6 +721,30 @@ def test_scan_starts_without_immediate_jog():
     assert g._scan_mm_total == 0.0
     assert g._scan_next_chunk_time == pytest_approx(100.0)
 
+def test_start_scan_clears_hh_gate_cache_before_spoolman_sync():
+    """scan start must call _NFC_GATE_CLEAR_CACHE before MMU_SPOOLMAN SYNC."""
+    g = _make_gate(gate=2)
+    g._start_scan_mode()
+    scripts = g.printer.gcode_scripts
+    clear_idx = next(
+        (i for i, s in enumerate(scripts) if '_NFC_GATE_CLEAR_CACHE GATE=2' in s),
+        None)
+    sync_idx = next(
+        (i for i, s in enumerate(scripts) if 'MMU_SPOOLMAN SYNC=1' in s),
+        None)
+    assert clear_idx is not None, "_NFC_GATE_CLEAR_CACHE GATE=2 not called on scan start"
+    assert sync_idx  is not None, "MMU_SPOOLMAN SYNC=1 not called on scan start"
+    assert clear_idx < sync_idx,  "cache clear must run before Spoolman sync"
+
+def test_start_scan_sync_hh_false_clears_cache_but_skips_spoolman():
+    """sync_hh=False must still clear HH gate cache but skip MMU_SPOOLMAN SYNC."""
+    from nfc_gates import scan_jog
+    g = _make_gate(gate=2)
+    scan_jog.start(g, sync_hh=False)
+    scripts = g.printer.gcode_scripts
+    assert any('_NFC_GATE_CLEAR_CACHE GATE=2' in s for s in scripts)
+    assert not any('MMU_SPOOLMAN' in s for s in scripts)
+
 def test_scan_step_issues_one_chunk_when_due():
     """No tag + due chunk issues scan_jog_mm, not the full scan distance."""
     g = _make_gate(gate=1, scan_jog_mm=50.0, scan_max_mm=200.0,
@@ -786,6 +904,18 @@ def test_manual_jog_success_message_has_readable_spacing():
     assert gcmd.responses[-1].startswith(
         '🔍 NFC[test]: scan-jog started for gate 3 (max=')
 
+def test_manual_jog_can_skip_hh_spoolman_sync():
+    g = _make_gate(gate=3)
+    g.printer.set_print_state('standby')
+    g.printer.set_mmu(MockMMU(gate_status=[0, 0, 0, 1], action='idle'))
+    gcmd = MockGCmd({'HH_SYNC': 0})
+
+    g._manual_jog_scan(gcmd)
+
+    assert g._scan_mode
+    assert not any('MMU_SPOOLMAN SYNC=1' in script
+                   for script in g.printer.gcode_scripts)
+
 def test_automatic_jog_blocked_by_unsafe_lane():
     g = _make_gate()
     g.printer.set_print_state('standby')
@@ -833,9 +963,25 @@ def test_run_rewind_gcode_content():
     g._run_rewind()
     scripts = g.printer.gcode_scripts
     assert len(scripts) == 2
-    assert 'MMU_TEST_MOVE MOVE=-90.00' in scripts[0]
-    assert scripts[1] == 'mmu_check_gate'
+    assert 'MMU_TEST_MOVE MOVE=-70.00' in scripts[0]
+    assert scripts[1] == '_MMU_STEP_UNLOAD_GATE'
     assert 'MMU_UNLOAD' not in scripts[0]
+
+def test_run_rewind_uses_configured_buffer():
+    g = _make_gate(gate=3, scan_rewind_buffer_mm=40.0)
+    g._scan_mm_total = 100.0
+    g._run_rewind()
+    scripts = g.printer.gcode_scripts
+    assert len(scripts) == 2
+    assert 'MMU_TEST_MOVE MOVE=-60.00' in scripts[0]
+    assert scripts[1] == '_MMU_STEP_UNLOAD_GATE'
+
+def test_run_rewind_short_scan_skips_fast_rewind():
+    g = _make_gate(gate=3, scan_rewind_buffer_mm=30.0)
+    g._scan_mm_total = 20.0
+    g._run_rewind()
+    scripts = g.printer.gcode_scripts
+    assert scripts == ['_MMU_STEP_UNLOAD_GATE']
 
 def test_rewind_skipped_when_nothing_jogged():
     """_run_rewind must not issue any GCode if scan_mm_total is 0."""
@@ -946,6 +1092,7 @@ def test_finish_scan_uid_only_event_dispatches_without_meta():
     g._finish_scan()
 
     assert g._klipper.calls == [('uid_only', 0, '04AABB', None, None)]
+    assert g._hh_load_paused
 
 
 # ── Approx helper (avoids pytest dependency for float comparison) ─────────────
