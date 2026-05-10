@@ -23,14 +23,21 @@ This is the day-to-day reference for operating the NFC gate reader from the Flui
 | `NFC GATE=<n> HELP=1` | Show available commands |
 | `NFC_HH_SYNC_CACHE` | Re-seed all lane caches from the current Happy Hare gate map |
 | `NFC GATE=<n> HH_SYNC=1 SPOOL_ID=<n>` | Seed one lane's cache directly (called by `NFC_HH_SYNC_CACHE`) |
-| `NFC_SHARED READ=1` | Start shared polling (also triggered by post-unload hook) |
+| `NFC_SHARED READ=1` | Start shared polling manually; rejected while printing |
 | `NFC_SHARED READ=0` | Stop shared polling (keeps any pending spool) |
-| `NFC_SHARED STATUS=1` | Show shared reader state (pending spool, time remaining, last error) |
+| `NFC_SHARED STATUS=1` | Show detailed shared reader state |
+| `NFC_SHARED SUMMARY=1` | Show one-line shared reader state and next action |
+| `NFC_SHARED HELP=1` | Show shared reader command help |
+| `NFC_SHARED CANCEL=1` | Cancel a staged shared spool and stop polling |
+| `NFC_SHARED REPLACE=1` | Discard a staged spool and scan another |
+| `NFC_SHARED RETRY=1` | Retry shared preload staging after fixing HH/Spoolman issue |
+| `NFC_SHARED LED_TEST=1` | Test configured shared tag-read LED effect |
+| <span style="color:orange">━━━ **Advanced Shared Reader** — internal/recovery commands, not low-level PN532 debug ━━━</span> | |
 | `NFC_SHARED CLEAR=1` | Clear pending spool, stop polling, reset shared state |
 | `NFC_SHARED PRELOAD_CHECK=1` | Stage `NEXT_SPOOLID` if a valid pending spool exists (called from HH pre-load hook) |
-| `NFC_SHARED POLL=1` | Force one full read/resolve cycle on the shared reader |
-| `NFC_SHARED SCAN=1` | Raw hardware scan only — no Spoolman/HH dispatch |
-| `NFC_SHARED INIT=1` | Re-run PN532 init on the shared reader |
+| `NFC_SHARED POLL=1` | Force one full read/resolve cycle on the shared reader; skips while printing |
+| `NFC_SHARED SCAN=1` | Raw hardware scan only — no Spoolman/HH dispatch; skips while printing |
+| `NFC_SHARED INIT=1` | Re-run PN532 init on the shared reader; resumes startup polling if enabled |
 | `NFC_SHARED CLEAR_CACHE=1` | Clear tag cache on the shared reader (keeps pending spool) |
 | <span style="color:red">━━━ **Low-Level Debug** — requires `low_level_debug: True` — bypasses normal state machine ━━━</span> | |
 | `NFC GATE=<n> STEP=WAKEUP` | Write `0x00` to nudge PN532 out of power-down |
@@ -479,7 +486,11 @@ If Happy Hare updates correctly, the pipeline from macro inward is working. If i
 
 The event macros are in `~/printer_data/config/nfc/nfc_macros.cfg`. Edit them to match your Happy Hare version.
 
-**All Happy Hare commands must stay inside `nfc_macros.cfg`** — do not put `MMU_GATE_MAP` or other Happy Hare commands in Python. This keeps Happy Hare-facing behavior visible and editable in config without touching Python code.
+For lane readers, the Happy Hare-facing gate assignment commands live in
+`nfc_macros.cfg` so they remain visible and editable without touching Python.
+The shared reader is the exception: `NFC_SHARED PRELOAD_CHECK=1` calls Happy
+Hare's public GCode commands directly from Python because it must stage
+`NEXT_SPOOLID` at the exact moment the pre-load hook fires.
 
 ### Happy Hare commands used by the defaults
 
@@ -489,9 +500,14 @@ The event macros are in `~/printer_data/config/nfc/nfc_macros.cfg`. Edit them to
 | `MMU_GATE_MAP GATE=<n> APPLY=1` | Apply the current gate map immediately |
 | `MMU_GATE_MAP GATE=<n> SPOOLID=-1 AVAILABLE=0 SYNC=1 QUIET=1` | Clear a gate, mark it empty, and sync to Spoolman |
 | `MMU_GATE_MAP GATE=<n> [MATERIAL=..] [COLOR=..] [TEMP=..] AVAILABLE=1 QUIET=1` | Assign metadata (no Spoolman spool ID) — metadata path only |
+| `MMU_GATE_MAP NEXT_SPOOLID=<id>` | Stage the next shared-reader spool for the gate Happy Hare is about to preload |
 | `MMU_SPOOLMAN REFRESH=1 QUIET=1` | Force Happy Hare to re-sync its Spoolman cache — called before gate assignment when a new spool was auto-created |
 
-The default macros are designed for Happy Hare with `spoolman_support: push`. `SYNC=1` tells Happy Hare to push the local gate map change to Spoolman. If your Happy Hare version uses different command names or parameters, update the macro body.
+The default lane macros are designed for Happy Hare with `spoolman_support:
+push`. `SYNC=1` tells Happy Hare to push the local gate map change to Spoolman.
+If your Happy Hare version uses different lane command names or parameters,
+update the macro body. Shared-reader `NEXT_SPOOLID` staging is implemented in
+Python and uses Happy Hare's public GCode command surface.
 
 ---
 
@@ -506,11 +522,14 @@ The shared reader is a single PN532 mounted inside the MMU body. Tap a spool tag
 3. Drop the spool into an MMU lane and push the filament tip into the pregate sensor.
 4. Happy Hare detects the pregate load and fires `variable_user_pre_load_extension` → `NFC_SHARED PRELOAD_CHECK=1`.
 5. NFC issues `MMU_GATE_MAP NEXT_SPOOLID=<id>` — Happy Hare assigns the spool to the loaded gate.
-6. Pending state is cleared. Polling restarts automatically for the next spool.
+6. Pending state is cleared only after Happy Hare accepts the command. For auto-created Spoolman spools, NFC refreshes HH's Spoolman cache first. Polling restarts automatically for the next spool.
 
 ### Commands
 
-**`NFC_SHARED STATUS=1`** — Show pending spool, time remaining, and last error.
+**`NFC_SHARED STATUS=1`** — Show detailed shared reader state: summary, polling
+flags, read deadline, pending spool/UID, auto-created flag, miss counter,
+strict mode, LED effect, print-safety block, last action, next action, and
+last error.
 
 ```
 shared: idle
@@ -520,33 +539,63 @@ shared: expired  spool 42  uid=ABCDEF
 shared: error  tag uid=ABCDEF not in Spoolman
 ```
 
-**`NFC_SHARED READ=1`** — Start shared polling. If a pending spool already exists it is cleared and scanning restarts. Polling auto-stops after `shared_read_timeout` seconds if no tag resolves. Not needed when `startup_polling: 1`.
+**`NFC_SHARED READ=1`** — Start shared polling. Rejected while printing. If a pending spool already exists, it refuses to overwrite it and tells you to use `NFC_SHARED REPLACE=1` or `NFC_SHARED CANCEL=1`. Polling auto-stops after `shared_read_timeout` seconds if no tag resolves. Not needed when `startup_polling: 1`.
 
 **`NFC_SHARED READ=0`** — Stop shared polling without clearing any pending spool.
+
+**`NFC_SHARED SUMMARY=1`** — Show one compact line with current shared state and the next suggested user action.
+
+**`NFC_SHARED HELP=1`** — Show the shared reader command list.
+
+**`NFC_SHARED CANCEL=1`** — User-friendly cancel command. Clears any staged spool and stops polling.
+
+**`NFC_SHARED REPLACE=1`** — Discard the staged spool and start a new timed scan. Use this when you tapped the wrong spool tag.
+
+**`NFC_SHARED RETRY=1`** — Alias for retrying `PRELOAD_CHECK=1` after fixing an HH/Spoolman issue.
+
+**`NFC_SHARED LED_TEST=1`** — Play the configured `shared_tag_read_effect` without scanning a tag. Use this during setup to confirm the HH LED effect exists and works.
+
+### Advanced Shared Reader Commands
+
+These are shared-reader control and recovery commands. They are not low-level
+PN532 debug commands, and they do not require `low_level_debug: True`.
 
 **`NFC_SHARED CLEAR=1`** — Clear pending state, stop polling, reset the reader. Use this to cancel a staged spool before the preload fires.
 
 **`NFC_SHARED PRELOAD_CHECK=1`** — Called automatically by `variable_user_pre_load_extension`. Issues `MMU_GATE_MAP NEXT_SPOOLID=<id>` if a valid pending spool exists. Skips only while printing. If no spool is staged, a console message advises tapping a tag first or using `MMU_PRELOAD`. With `force_spool_id: true` the load is blocked entirely until a spool is staged.
 
-**`NFC_SHARED POLL=1`** — Force one full read/resolve cycle.
+If HH/Spoolman staging fails, the pending spool is kept and the console tells
+you to fix the issue and retry with `NFC_SHARED PRELOAD_CHECK=1`.
 
-**`NFC_SHARED SCAN=1`** — Raw hardware scan only — shows UID, no Spoolman lookup or dispatch.
+**`NFC_SHARED POLL=1`** — Force one full read/resolve cycle. Skips while printing and reports that no poll was run.
 
-**`NFC_SHARED INIT=1`** — Re-run PN532 initialisation. Use after a wiring fault or reader failure.
+**`NFC_SHARED SCAN=1`** — Raw hardware scan only — shows UID, no Spoolman lookup or dispatch. Skips while printing.
+
+**`NFC_SHARED INIT=1`** — Re-run PN532 initialisation. Use after a wiring fault or reader failure. If `startup_polling: 1` is set, the printer is not printing, and no spool is pending, polling resumes automatically after a successful init.
 
 **`NFC_SHARED CLEAR_CACHE=1`** — Clear the tag UID cache without clearing any pending spool state.
 
 ### Pending timeout
 
-`shared_pending_timeout` starts when a tag resolves. If no preload fires within that window, the pending spool expires and `NFC_SHARED STATUS=1` shows `expired`. Preloads then proceed normally with no spool staged. Tap again to queue a new spool.
+`shared_pending_timeout` starts when a tag resolves. If no preload fires within
+that window, the pending spool expires automatically. With `startup_polling: 1`,
+polling resumes after the expired spool is cleared. Tap again to queue a new
+spool.
 
 ### Unresolvable tags
 
-If the reader sees a UID that Spoolman cannot resolve, it increments a miss counter. After `shared_missed_limit` consecutive misses (default 3) a console message appears advising the user to use `MMU_PRELOAD` to load without spool assignment. The counter resets on a successful read, `CLEAR=1`, or `READ=1`.
+If the reader sees a UID that Spoolman cannot resolve, it increments a miss counter. After `shared_missed_limit` consecutive misses (default 3) a console message appears advising the user to use `MMU_PRELOAD` to load without spool assignment. The counter resets on a successful read, `CLEAR=1`, `READ=1`, or `REPLACE=1`.
 
 ### Re-scanning
 
-Once a tag resolves, polling stops. To scan a different spool issue `NFC_SHARED READ=1` (or `NFC_SHARED CLEAR=1` first) — either restarts polling cleanly.
+Once a tag resolves, polling stops. To scan a different spool issue
+`NFC_SHARED REPLACE=1`. Plain `READ=1` will refuse to overwrite a pending spool
+and will tell you to use `REPLACE=1` or `CANCEL=1`.
+
+If an advanced/manual read path sees another valid tag while a spool is already
+pending, NFC keeps the original pending spool, reports the newly read
+UID/spool as ignored, and tells the user to run `NFC_SHARED REPLACE=1` if
+replacement was intentional.
 
 ---
 

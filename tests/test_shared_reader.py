@@ -136,8 +136,11 @@ class GCodeCapture:
     def __init__(self):
         self.scripts   = []
         self.responses = []
+        self.fail_on   = None
 
     def run_script(self, script):
+        if self.fail_on and self.fail_on in script:
+            raise RuntimeError("simulated gcode failure")
         self.scripts.append(script)
 
     def respond_info(self, msg):
@@ -153,9 +156,22 @@ class GCodeCapture:
 class MockReader:
     def __init__(self):
         self.clear_current_card_calls = 0
+        self.read_target_calls = 0
+        self.init_calls = 0
+        self.alive = True
 
     def _clear_current_card(self):
         self.clear_current_card_calls += 1
+
+    def read_target(self):
+        self.read_target_calls += 1
+        return None
+
+    def init(self):
+        self.init_calls += 1
+
+    def is_alive(self):
+        return self.alive
 
 
 class MockSpoolman:
@@ -274,6 +290,7 @@ def _make_shared(
     g._shared_pending_deadline    = 0.0
     g._shared_pending_auto_created = False
     g._shared_last_error          = None
+    g._shared_last_action         = None
     g._shared_read_deadline       = 0.0
     g._shared_missed_resolutions  = 0
     g._state                      = GateState(255)
@@ -287,11 +304,13 @@ def _make_shared(
     return g
 
 
-def _stage_pending(g, spool_id=42, uid='AABBCCDD', ttl=120.0):
+def _stage_pending(g, spool_id=42, uid='AABBCCDD', ttl=120.0,
+                   auto_created=False):
     """Manually put a valid pending spool on the shared reader."""
     g._shared_pending_spool    = spool_id
     g._shared_pending_uid      = uid
     g._shared_pending_deadline = g.reactor.monotonic() + ttl
+    g._shared_pending_auto_created = auto_created
 
 
 # ── Config parsing ────────────────────────────────────────────────────────────
@@ -407,6 +426,47 @@ def test_preload_check_stages_next_spoolid():
     assert 'MMU_GATE_MAP NEXT_SPOOLID=42' in g._gcode.scripts
     assert g._shared_pending_spool is None   # cleared after staging
     assert g._polling is True                # polling restarted
+    assert g._shared_last_action == 'staged spool 42 via NEXT_SPOOLID'
+
+
+def test_preload_check_refreshes_before_auto_created_next_spoolid():
+    g = _make_shared()
+    _stage_pending(g, spool_id=42, auto_created=True)
+    gcmd = MockGCmd()
+    g._shared_preload_check(gcmd)
+    assert g._gcode.scripts[:2] == [
+        'MMU_SPOOLMAN REFRESH=1 QUIET=1',
+        'MMU_GATE_MAP NEXT_SPOOLID=42',
+    ]
+    assert g._shared_pending_spool is None
+    assert g._polling is True
+
+
+def test_preload_check_keeps_pending_when_auto_created_refresh_fails():
+    g = _make_shared()
+    _stage_pending(g, spool_id=42, uid='AUTOUID', auto_created=True)
+    g._gcode.fail_on = 'MMU_SPOOLMAN REFRESH'
+    gcmd = MockGCmd()
+    g._shared_preload_check(gcmd)
+    assert not any('NEXT_SPOOLID' in s for s in g._gcode.scripts)
+    assert g._shared_pending_spool == 42
+    assert g._shared_pending_uid == 'AUTOUID'
+    assert g._polling is False
+    assert any('REFRESH failed' in r and 'pending spool 42 kept' in r
+               for r in gcmd.responses)
+
+
+def test_preload_check_keeps_pending_when_gate_map_fails():
+    g = _make_shared()
+    _stage_pending(g, spool_id=42, uid='KEEPUID')
+    g._gcode.fail_on = 'MMU_GATE_MAP'
+    gcmd = MockGCmd()
+    g._shared_preload_check(gcmd)
+    assert not any('NEXT_SPOOLID' in s for s in g._gcode.scripts)
+    assert g._shared_pending_spool == 42
+    assert g._shared_pending_uid == 'KEEPUID'
+    assert g._polling is False
+    assert any('pending spool 42 kept' in r for r in gcmd.responses)
 
 
 def test_preload_check_expired_emits_advisory():
@@ -427,6 +487,7 @@ def test_preload_check_skipped_while_printing():
     g._shared_preload_check(gcmd)
     assert not any('NEXT_SPOOLID' in s for s in g._gcode.scripts)
     assert g._shared_pending_spool == 5  # still pending
+    assert any('skipped while printing' in r for r in gcmd.responses)
 
 
 def test_preload_check_hybrid_already_assigned_silent():
@@ -479,7 +540,10 @@ def test_status_expired():
     g = _make_shared()
     _stage_pending(g, spool_id=7, ttl=1.0)
     g.reactor.advance(10.0)
-    assert 'expired' in g.shared_status_line()
+    line = g.shared_status_line()
+    assert 'expired' in line
+    assert g._shared_pending_spool is None
+    assert 'error' in g.shared_status_line()
 
 
 def test_status_error():
@@ -492,6 +556,150 @@ def test_status_failed():
     g = _make_shared()
     g._failed = True
     assert 'FAILED' in g.shared_status_line()
+
+
+def test_cmd_status_reports_detailed_shared_state():
+    g = _make_shared(tag_read_effect='mmu_RFID_read', force_spool_id=True)
+    _stage_pending(g, spool_id=42, uid='DETAILUID', auto_created=True)
+    g._shared_missed_resolutions = 1
+    g._shared_last_action = 'tag staged spool 42 uid=DETAILUID auto_created=True'
+    gcmd = MockGCmd({'STATUS': 1})
+    g.cmd_NFC_SHARED(gcmd)
+    status = '\n'.join(gcmd.responses)
+    assert 'pending spool 42' in status
+    assert 'pending_auto_created: yes' in status
+    assert 'force_spool_id: on' in status
+    assert 'tag_read_effect: mmu_RFID_read' in status
+    assert 'missed_resolutions: 1/3' in status
+    assert 'last_action: tag staged spool 42' in status
+    assert 'next: insert filament before timeout' in status
+
+
+def test_cmd_summary_reports_one_line_with_next_action():
+    g = _make_shared()
+    _stage_pending(g, spool_id=42, uid='SUMMARYUID')
+    gcmd = MockGCmd({'SUMMARY': 1})
+    g.cmd_NFC_SHARED(gcmd)
+    summary = '\n'.join(gcmd.responses)
+    assert 'shared:  pending spool 42' in summary
+    assert 'next: insert filament before timeout' in summary
+
+
+# ── NFC_SHARED read/scan safety ──────────────────────────────────────────────
+
+def test_shared_read_does_not_start_while_printing():
+    g = _make_shared()
+    g.printer.set_print_state('printing')
+    gcmd = MockGCmd({'READ': 1})
+    g.cmd_NFC_SHARED(gcmd)
+    assert g._polling is False
+    assert g._shared_read_deadline == 0.0
+    assert any('not started while printing' in r for r in gcmd.responses)
+
+
+def test_shared_read_refuses_to_replace_pending_without_replace_command():
+    g = _make_shared()
+    _stage_pending(g, spool_id=42)
+    gcmd = MockGCmd({'READ': 1})
+    g.cmd_NFC_SHARED(gcmd)
+    assert g._shared_pending_spool == 42
+    assert g._polling is False
+    assert any('spool 42 is already pending' in r and 'REPLACE=1' in r
+               for r in gcmd.responses)
+
+
+def test_shared_replace_clears_pending_and_starts_polling():
+    g = _make_shared()
+    _stage_pending(g, spool_id=42)
+    gcmd = MockGCmd({'REPLACE': 1})
+    g.cmd_NFC_SHARED(gcmd)
+    assert g._shared_pending_spool is None
+    assert g._polling is True
+    assert g._shared_read_deadline == (
+        g.reactor.monotonic() + g._shared_read_timeout)
+    assert any('discarded pending spool 42' in r for r in gcmd.responses)
+
+
+def test_shared_scan_skips_reader_while_printing():
+    g = _make_shared()
+    g.printer.set_print_state('printing')
+    gcmd = MockGCmd({'SCAN': 1})
+    g.cmd_NFC_SHARED(gcmd)
+    assert g._reader.read_target_calls == 0
+    assert any('skipped while printing' in r for r in gcmd.responses)
+
+
+def test_shared_poll_skips_while_printing_without_success_message():
+    g = _make_shared()
+    g.printer.set_print_state('printing')
+    gcmd = MockGCmd({'POLL': 1})
+    g.cmd_NFC_SHARED(gcmd)
+    assert g._reader.read_target_calls == 0
+    assert any('poll skipped while printing' in r for r in gcmd.responses)
+    assert not any('one poll complete' in r for r in gcmd.responses)
+
+
+def test_shared_init_resumes_startup_polling():
+    g = _make_shared(startup_polling=1)
+    g._failed = True
+    g._polling = False
+    gcmd = MockGCmd({'INIT': 1})
+    g.cmd_NFC_SHARED(gcmd)
+    assert g._reader.init_calls == 1
+    assert g._polling is True
+    assert g._shared_read_deadline == 0.0
+    assert any('startup polling resumed' in r for r in gcmd.responses)
+
+
+def test_shared_init_does_not_resume_when_pending():
+    g = _make_shared(startup_polling=1)
+    _stage_pending(g, spool_id=42)
+    g._failed = True
+    g._polling = False
+    gcmd = MockGCmd({'INIT': 1})
+    g.cmd_NFC_SHARED(gcmd)
+    assert g._polling is False
+    assert not any('startup polling resumed' in r for r in gcmd.responses)
+
+
+def test_shared_retry_alias_runs_preload_check():
+    g = _make_shared()
+    _stage_pending(g, spool_id=42)
+    gcmd = MockGCmd({'RETRY': 1})
+    g.cmd_NFC_SHARED(gcmd)
+    assert 'MMU_GATE_MAP NEXT_SPOOLID=42' in g._gcode.scripts
+    assert g._shared_pending_spool is None
+
+
+def test_shared_cancel_alias_clears_pending_and_stops():
+    g = _make_shared()
+    _stage_pending(g, spool_id=42)
+    g._polling = True
+    gcmd = MockGCmd({'CANCEL': 1})
+    g.cmd_NFC_SHARED(gcmd)
+    assert g._shared_pending_spool is None
+    assert g._polling is False
+    assert g._shared_last_action == 'pending spool canceled'
+    assert any('pending spool canceled' in r for r in gcmd.responses)
+
+
+def test_shared_led_test_plays_configured_effect():
+    g = _make_shared(tag_read_effect='mmu_RFID_read')
+    gcmd = MockGCmd({'LED_TEST': 1})
+    g.cmd_NFC_SHARED(gcmd)
+    assert any('MMU_SET_LED EXIT_EFFECT=mmu_RFID_read DURATION=3' in s
+               for s in g._gcode.scripts)
+    assert any('LED effect mmu_RFID_read requested' in r
+               for r in gcmd.responses)
+
+
+def test_shared_led_test_reports_missing_effect_config():
+    g = _make_shared()
+    gcmd = MockGCmd({'LED_TEST': 1})
+    g.cmd_NFC_SHARED(gcmd)
+    assert not g._gcode.scripts
+    assert any('no shared_tag_read_effect configured' in r
+               for r in gcmd.responses)
 
 
 # ── _handle_print_start / _handle_print_end ───────────────────────────────────
@@ -536,6 +744,26 @@ def test_print_end_resumes_when_pending_expired():
     g.reactor.advance(10.0)           # deadline in the past
     g._handle_print_end(0)
     assert g._polling is True
+    assert g._shared_pending_spool is None
+
+
+def test_pending_timeout_auto_expires_and_resumes_startup_polling():
+    g = _make_shared(startup_polling=1, pending_timeout=10.0)
+    g._polling = True
+    g._shared_handle_event(EVENT_CHANGED, 'AUTOEXPIRE', 42)
+
+    assert g._polling is False
+    assert g.reactor.timers[g._poll_timer][1] == g._shared_pending_deadline
+
+    g.reactor.advance(10.0)
+    result = g._poll_timer_event(g.reactor.monotonic())
+
+    assert result == g.reactor.NOW
+    assert g._shared_pending_spool is None
+    assert g._polling is True
+    assert 'expired' in g._shared_last_error
+    assert any('RESPOND MSG=' in s and 'pending spool timed out after 10s' in s
+               and 'polling resumed' in s for s in g._gcode.scripts)
 
 
 def test_print_end_noop_when_startup_polling_off():
@@ -562,6 +790,47 @@ def test_event_changed_resets_miss_counter():
     g._shared_missed_resolutions = 2
     g._shared_handle_event(EVENT_CHANGED, 'AA', 5)
     assert g._shared_missed_resolutions == 0
+
+
+def test_event_changed_does_not_replace_existing_pending_spool():
+    g = _make_shared(tag_read_effect='mmu_RFID_read')
+    _stage_pending(g, spool_id=55, uid='OLDUID', ttl=60.0)
+    old_deadline = g._shared_pending_deadline
+
+    g._shared_handle_event(EVENT_CHANGED, 'NEWUID', 99)
+
+    assert g._shared_pending_spool == 55
+    assert g._shared_pending_uid == 'OLDUID'
+    assert g._shared_pending_deadline == old_deadline
+    assert g._shared_last_action == 'ignored spool 99 while spool 55 pending'
+    assert not any('MMU_SET_LED' in s for s in g._gcode.scripts)
+    assert any('RESPOND MSG=' in s and 'spool 55 is already pending' in s
+               and 'REPLACE=1' in s for s in g._gcode.scripts)
+
+
+def test_event_changed_duplicate_pending_read_is_ignored():
+    g = _make_shared()
+    _stage_pending(g, spool_id=55, uid='OLDUID', ttl=60.0)
+
+    g._shared_handle_event(EVENT_CHANGED, 'OLDUID', 55)
+
+    assert g._shared_pending_spool == 55
+    assert g._shared_pending_uid == 'OLDUID'
+    assert g._shared_last_action == 'ignored duplicate read for pending spool 55'
+    assert any('duplicate tag read ignored' in s for s in g._gcode.scripts)
+
+
+def test_event_changed_replaces_expired_pending_spool():
+    g = _make_shared()
+    _stage_pending(g, spool_id=55, uid='OLDUID', ttl=1.0)
+    g.reactor.advance(2.0)
+
+    g._shared_handle_event(EVENT_CHANGED, 'NEWUID', 99)
+
+    assert g._shared_pending_spool == 99
+    assert g._shared_pending_uid == 'NEWUID'
+    assert g._shared_last_action == (
+        'tag staged spool 99 uid=NEWUID auto_created=False')
 
 
 def test_event_changed_direct_metadata_increments_miss():
@@ -616,12 +885,20 @@ def test_event_changed_fires_led_effect():
                for s in g._gcode.scripts)
 
 
+def test_event_changed_led_effect_failure_warns_but_stages():
+    g = _make_shared(tag_read_effect='bad_effect')
+    g._gcode.fail_on = 'MMU_SET_LED'
+    g._shared_handle_event(EVENT_CHANGED, 'AA', 7)
+    assert g._shared_pending_spool == 7
+    assert g._polling is False
+    assert any('RESPOND MSG=' in s and 'LED effect' in s
+               for s in g._gcode.scripts)
+
+
 # ── _poll_timer_event recovery command ───────────────────────────────────────
 
 def test_poll_timer_failed_reader_uses_nfc_shared_init():
     """Failed shared reader should log NFC_SHARED INIT=1, not NFC GATE=255 INIT=1."""
-    import nfc_gates.nfc_manager as mgr
-
     g = _make_shared()
     g._failed  = True
     g._polling = True
@@ -635,12 +912,13 @@ def test_poll_timer_failed_reader_uses_nfc_shared_init():
         def info(self, *a, **k): pass
         def error(self, *a, **k): pass
 
-    old_logger = mgr.logger
-    mgr.logger = CapLogger()
+    globals_dict = NFCGate._poll_timer_event.__globals__
+    old_logger = globals_dict['logger']
+    globals_dict['logger'] = CapLogger()
     try:
         result = g._poll_timer_event(g.reactor.monotonic())
     finally:
-        mgr.logger = old_logger
+        globals_dict['logger'] = old_logger
 
     assert result == g.reactor.NEVER
     assert g._polling is False
@@ -686,6 +964,35 @@ def test_shared_clear_cache_resets_tag_cache_and_keeps_pending_spool():
     assert g._spoolman.clear_cache_calls == 1
     assert g._reader.clear_current_card_calls == 1
     assert any('pending spool kept' in r for r in gcmd.responses)
+
+
+# ── NFC_SHARED help ───────────────────────────────────────────────────────────
+
+def test_shared_help_groups_advanced_commands_separately():
+    g = _make_shared()
+    gcmd = MockGCmd()
+
+    g.cmd_NFC_SHARED(gcmd)
+
+    help_text = "\n".join(gcmd.responses)
+    assert "NFC_SHARED commands:" in help_text
+    assert "NFC_SHARED CANCEL=1" in help_text
+    assert "NFC_SHARED REPLACE=1" in help_text
+    assert "NFC_SHARED RETRY=1" in help_text
+    assert "NFC_SHARED SUMMARY=1" in help_text
+    assert "NFC_SHARED HELP=1" in help_text
+    assert "Advanced shared-reader commands:" in help_text
+    assert "NFC_SHARED PRELOAD_CHECK=1" in help_text
+    assert "NFC_SHARED CLEAR_CACHE=1" in help_text
+    assert "Low-Level Debug" not in help_text
+    assert "low_level_debug" not in help_text
+
+
+def test_shared_help_param_shows_help():
+    g = _make_shared()
+    gcmd = MockGCmd({'HELP': 1})
+    g.cmd_NFC_SHARED(gcmd)
+    assert any('NFC_SHARED commands:' in r for r in gcmd.responses)
 
 
 if __name__ == '__main__':

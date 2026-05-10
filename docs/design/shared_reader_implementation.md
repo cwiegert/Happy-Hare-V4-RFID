@@ -1,0 +1,79 @@
+# Implementation: Shared Reader
+
+> Companion implementation/audit tracker for `docs/design/shared_reader.md`.
+> The design document describes the intended behavior; this file tracks
+> what the current code and docs implement.
+
+---
+
+> Working memory for auditing the shared reader implementation against
+> `docs/design/shared_reader.md`.
+>
+> Green means the current tree has an implementation matching the baseline.
+> Red means the item is missing, incomplete, or still requires validation.
+
+| Implemented | Baseline requirement | Files affected | Comments / Feedback |
+|:---:|---|---|---|
+| ✅ | Shared reader is configured as `[nfc_gate shared]` with `shared: true`. | `klippy/extras/nfc_gates/nfc_manager.py`, `install.sh`, `docs/shared/configuration.md` | |
+| ✅ | Shared reader does not require or accept a user-facing `mmu_gate`; code uses internal sentinel gate `255`. | `klippy/extras/nfc_gates/nfc_manager.py` | |
+| ✅ | Only one shared reader may be configured. | `klippy/extras/nfc_gates/nfc_manager.py` | |
+| ✅ | `scan_enabled` is forced off for the shared reader; shared must not enter scan-jog. | `klippy/extras/nfc_gates/nfc_manager.py` | |
+| ✅ | Shared reader does not register `NFC GATE=` mux commands; all user control goes through `NFC_SHARED`. `NFC_STATUS` is registered globally by `NFCGateDefaults` when a base `[nfc_gate]` section exists, or as a fallback by the first entry in `_lane_instances` — which in a shared-only install is the shared reader itself. | `klippy/extras/nfc_gates/nfc_manager.py`, `klippy/extras/nfc_gate.py` | |
+| ✅ | `NFC_SHARED` supports user-facing commands (`READ`, `STATUS`, `CANCEL`, `RETRY`, `LED_TEST`) and advanced shared-reader commands (`CLEAR`, `PRELOAD_CHECK`, `POLL`, `SCAN`, `INIT`, `CLEAR_CACHE`). Advanced shared-reader commands are documented separately from low-level PN532 debug commands. | `klippy/extras/nfc_gates/nfc_manager.py`, `docs/shared/klipper-functions.md` | |
+| ✅ | Shared state tracks pending UID, pending spool ID, pending deadline, auto-created flag, last error, and read deadline. | `klippy/extras/nfc_gates/nfc_manager.py` | |
+| ✅ | Successful tag resolution stores a pending spool, starts `shared_pending_timeout`, stops polling, and keeps the pending spool after tag removal. | `klippy/extras/nfc_gates/nfc_manager.py` | |
+| ✅ | UID-only / unresolved tag records an error without clearing a previously pending spool. | `klippy/extras/nfc_gates/nfc_manager.py` | |
+| ✅ | Rich tag returning `DIRECT_METADATA_SPOOL` sentinel is treated as unresolved (increments miss counter, console message at limit); avoids crash in `_shared_preload_check`. Rich tags work when `spoolman_auto_create: true` creates a real spool ID first. | `klippy/extras/nfc_gates/nfc_manager.py`, `docs/shared/shared-reader.md`, `docs/shared/configuration.md` | |
+| ✅ | `shared_pending_timeout` defaults to `120.0` seconds and expires stale pending spools before preload staging, status display, print-end polling resume, or by timer while idle. With `startup_polling: 1`, timer expiry clears the pending spool and resumes polling. | `klippy/extras/nfc_gates/nfc_manager.py`, `docs/shared/configuration.md`, `tests/test_shared_reader.py` | |
+| ✅ | `shared_read_timeout` defaults to `120.0` seconds and stops manually started polling when no valid tag resolves. | `klippy/extras/nfc_gates/nfc_manager.py`, `docs/shared/configuration.md` | |
+| ✅ | `startup_polling: 1` starts polling after PN532 init without applying the manual read timeout. | `klippy/extras/nfc_gates/nfc_manager.py`, `install.sh` | |
+| ✅ | Shared polling skips I2C reads while printing; manual `READ=1` and `SCAN=1` are rejected while printing; polling continues at all other times including during HH load/unload/homing. | `klippy/extras/nfc_gates/nfc_manager.py`, `tests/test_shared_reader.py` | |
+| ✅ | Unresolved UID increments `_shared_missed_resolutions`; after `shared_missed_limit` consecutive misses (config key, default 3, minval 1) a console message advises the user to use `MMU_PRELOAD`. Counter resets on successful resolution, `CLEAR=1`, or `READ=1`. | `klippy/extras/nfc_gates/nfc_manager.py` | |
+| ✅ | `PRELOAD_CHECK` emits console feedback when skipped while printing, when no spool is staged, or when HH/Spoolman staging fails; failures keep the pending spool and include retry instructions. | `klippy/extras/nfc_gates/nfc_manager.py`, `tests/test_shared_reader.py` | |
+| ✅ | `force_spool_id: true` config option — when set, `PRELOAD_CHECK` with no staged spool raises a gcode error that blocks HH from continuing the preload. | `klippy/extras/nfc_gates/nfc_manager.py` | |
+| ✅ | `PRELOAD_CHECK` skips only while printing. HH-busy check removed — `user_pre_load_extension` fires while HH action is non-idle, so the busy check would always prevent staging. | `klippy/extras/nfc_gates/nfc_manager.py` | |
+| ✅ | `PRELOAD_CHECK` stages the pending spool with `MMU_GATE_MAP NEXT_SPOOLID=<id>` and keeps the pending spool intact if that command fails. | `klippy/extras/nfc_gates/nfc_manager.py`, `tests/test_shared_reader.py` | |
+| ✅ | After successful `PRELOAD_CHECK`, shared polling restarts for the next spool with no read deadline. | `klippy/extras/nfc_gates/nfc_manager.py` | |
+| ✅ | **Hybrid install supported**: per-lane readers and a shared reader may coexist. At `PRELOAD_CHECK` time, if the pending spool is already assigned to any gate in HH's gate map, staging is skipped. In hybrid mode (`_has_per_lane_readers = True`) this is a silent info log — the per-lane reader handled it. In pure-shared mode this is unexpected (possible stale pending or duplicate load) and emits a console warning. `_has_per_lane_readers` is set at `_handle_connect` by scanning `_lane_instances` for non-shared entries; all entries are present at connect time. | `klippy/extras/nfc_gates/nfc_manager.py` | |
+| ✅ | `READ=0` stops polling but keeps any pending spool; `READ=1` refuses to overwrite a pending spool and points users to `REPLACE=1` or `CANCEL=1`; `REPLACE=1` explicitly discards a staged spool and starts a new scan; `CLEAR=1` stops polling and clears pending/shared state; `CANCEL=1` is a user-friendly alias for canceling a staged spool. | `klippy/extras/nfc_gates/nfc_manager.py`, `docs/shared/klipper-functions.md`, `tests/test_shared_reader.py` | |
+| ✅ | If another valid tag is read while a non-expired spool is already pending, the original pending spool is kept. The new UID/spool is ignored, logged, and reported to the console with guidance to run `NFC_SHARED REPLACE=1` if replacement was intentional. | `klippy/extras/nfc_gates/nfc_manager.py`, `tests/test_shared_reader.py`, `docs/shared/klipper-functions.md` | |
+| ✅ | `NFC_SHARED CLEAR_CACHE=1` clears shared tag/cache state (`GateState`, Spoolman cache, PN532 current-card cache) while preserving `_shared_pending_*` staged spool state. | `klippy/extras/nfc_gates/nfc_manager.py`, `klippy/extras/nfc_gates/gate_state.py`, `tests/test_shared_reader.py` | |
+| ✅ | Successful tag read can trigger a named HH LED effect via `shared_tag_read_effect`; design example is blinking yellow `mmu_RFID_read`. LED effect failures warn in the log and console but do not prevent spool staging. | `klippy/extras/nfc_gates/nfc_manager.py`, `docs/shared/configuration.md`, `tests/test_shared_reader.py` | |
+| ❌ | A default shared tag-read LED effect must be defined in the MMU LED config files. The expected effect name is `mmu_RFID_read`, implemented as a blinking yellow `[mmu_led_effect]`, likely in the same config file where the EMU installer adds its MMU LED effects. | MMU LED config / installer-managed MMU config | Not yet implemented. |
+| ❌ | `shared_tag_read_effect: mmu_RFID_read` should only be enabled or recommended by default when the matching `[mmu_led_effect mmu_RFID_read]` definition is present; otherwise the shared reader can warn at runtime but users still have to create the effect manually. | `install.sh`, `config/nfc_reader_shared.cfg`, MMU LED config | Not yet implemented. |
+| ❌ | Auto-created Spoolman spool feedback needs an LED-effect decision: either reuse `mmu_RFID_read` for any successful tag read or define/document a distinct auto-create effect so users can tell "existing spool found" from "new spool created". | `klippy/extras/nfc_gates/nfc_manager.py`, MMU LED config, docs | Not yet implemented. |
+| ✅ | `NFC_SHARED STATUS=1` reports detailed shared state: summary, polling/startup flags, deadlines, pending UID/spool, auto-created flag, miss counters, force mode, LED effect, print-safety block, last action, next action, and last error. `NFC_SHARED SUMMARY=1` provides a compact one-line state and next action, and `NFC_SHARED HELP=1` intentionally displays help. | `klippy/extras/nfc_gates/nfc_manager.py`, `docs/shared/klipper-functions.md`, `tests/test_shared_reader.py` | |
+| ✅ | `NFC_SHARED POLL=1` now responds with shared status and skips with console feedback while printing; it no longer reports a successful poll when no read occurred. | `klippy/extras/nfc_gates/nfc_manager.py`, `tests/test_shared_reader.py` | |
+| ✅ | `NFC_SHARED RETRY=1` retries `PRELOAD_CHECK` after an HH/Spoolman issue without requiring users to remember the hook command. | `klippy/extras/nfc_gates/nfc_manager.py`, `tests/test_shared_reader.py` | |
+| ✅ | `NFC_SHARED LED_TEST=1` plays the configured `shared_tag_read_effect` so users can validate LED setup without scanning a tag. | `klippy/extras/nfc_gates/nfc_manager.py`, `tests/test_shared_reader.py` | |
+| ✅ | `NFC_STATUS` output includes the shared reader; in a shared-only install it appears alone (no lane rows), in a mixed install it appears after the lane rows. The shared instance is in `_lane_instances` but filtered from the lane loop by the `_shared` flag; `_append_shared_status` adds it separately. | `klippy/extras/nfc_gates/nfc_manager.py`, `klippy/extras/nfc_gate.py` | |
+| ✅ | Shared reader ready/init messages use `NFC_SHARED` commands and do not include lane HH seed notes. `NFC_SHARED INIT=1` resumes polling when `startup_polling: 1`, the printer is not printing, and no spool is pending. | `klippy/extras/nfc_gates/nfc_manager.py`, `tests/test_shared_reader.py` | |
+| ✅ | `_poll_timer_event` failed-reader log now uses `NFC_SHARED INIT=1` for the shared reader (matches the `_delayed_init` pattern). `NFC GATE=255 INIT=1` no longer appears. | `klippy/extras/nfc_gates/nfc_manager.py` | |
+| ✅ | Happy Hare pre-load hook bridge exists as `_NFC_SHARED_PRELOAD` and calls `NFC_SHARED PRELOAD_CHECK=1`. | `config/nfc_macros.cfg`, `install.sh`, `docs/shared/configuration.md` | |
+| ✅ | `_NFC_SHARED_POST_UNLOAD` macro removed; polling is managed automatically via `idle_timeout:printing` / `idle_timeout:ready` events. | `config/nfc_macros.cfg` | |
+| ✅ | Shared polling pauses automatically on `idle_timeout:printing` and resumes on `idle_timeout:ready` / `idle_timeout:idle` when `startup_polling: 1`. | `klippy/extras/nfc_gates/nfc_manager.py` | |
+| ✅ | `_handle_print_end` no longer restarts polling when a valid (non-expired) spool is already pending. Logs "spool N still pending; polling stays stopped until PRELOAD_CHECK". Expired pending falls through to normal resume. | `klippy/extras/nfc_gates/nfc_manager.py` | |
+| ✅ | Installer supports an upfront lane/shared branch, defaults lane, asks for shared `i2c_mcu` and `i2c_bus`, and writes a shared-only hardware config when selected. | `install.sh` | |
+| ✅ | Installer detects existing `[nfc_gate shared]` config and existing shared MCU for reinstall defaults. | `install.sh` | |
+| ✅ | Installer next steps call out shared MCU flash and HH hook wiring. | `install.sh` | |
+| ✅ | **Separate file layout** — `[nfc_gate shared]` lives in `nfc_reader_shared.cfg`, not `nfc_reader_hw.cfg`. Pure-shared installs include it instead of `nfc_reader_hw.cfg`; hybrid installs include both. `install.sh`: `write_shared_config` targets the new file; `merge_config nfc_reader_hw.cfg` is skipped for pure-shared installs; `detect_reader_type` and `detect_shared_mcu` read only `nfc_reader_shared.cfg`. `config/nfc_reader_shared.cfg` ships in the repo as a template with full workflow explanation in the header. `nfc_reader_hw.cfg` has a hybrid pointer comment at the bottom. See `## Config File Layout` design section. | `install.sh`, `config/nfc_reader_shared.cfg`, `config/nfc_reader_hw.cfg`, `docs/shared/configuration.md`, `docs/shared/shared-reader.md` | |
+| ✅ | Normal PN532 driver waits use injectable `sleep_fn`, and `NFCGate` supplies a reactor-cooperative sleep using `reactor.pause`. | `klippy/extras/nfc_gates/pn532_driver.py`, `klippy/extras/nfc_gates/nfc_manager.py` | |
+| ✅ | Installer generated shared config exposes all shared knobs as commented-out defaults: `shared_tag_read_effect`, `shared_pending_timeout`, `shared_read_timeout`, `shared_missed_limit`, `force_spool_id`. | `install.sh` | |
+| ✅ | Shared reader behavior covered by 59 tests in `tests/test_shared_reader.py`: config parsing, pending expiry and timer auto-resume, `PRELOAD_CHECK`/`RETRY`, `CANCEL`/`REPLACE`, second-tag ignore while pending, auto-created Spoolman refresh, `MMU_GATE_MAP`/refresh failure preservation with retry text, detailed status and summary with next action, print-start/end auto-pause/resume, shared `READ=1` / `SCAN=1` / `POLL=1` printing guards, `INIT=1` startup-polling recovery, `LED_TEST`, explicit `HELP=1`, `_shared_handle_event` (CHANGED/UID_ONLY/REMOVED/DIRECT_METADATA_SPOOL, miss counter, LED effect warning), `_poll_timer_event` recovery command, `_shared_clear_pending` reset, shared `CLEAR_CACHE`. | `tests/test_shared_reader.py` | |
+| ✅ | PN532 low-level debug helpers still contain direct `time.sleep()` calls; either convert them to `sleep_fn` or document them as an explicit debug-only exception. | `klippy/extras/nfc_gates/pn532_driver.py` | this is fine, will not implement a change |
+| ✅ | Lane-only wiring / architecture docs now call out the shared-reader exception and link to the shared-reader guide. | `docs/i2c-pn532/wiring.md`, `docs/shared/architecture-decisions.md` | |
+| ✅ | Shared-reader docs no longer describe post-unload/eject-hook activation or HH-busy-skip behavior; docs now match idle-timeout pause/resume and print-only `PRELOAD_CHECK` gating. | `docs/design/shared_reader.md`, `docs/shared/klipper-functions.md` | |
+| ❌ | Idle-timeout pause/resume needs hardware validation to confirm shared polling stops while printing and resumes afterward without disturbing a pending staged spool. | Klipper idle_timeout events, printer hardware | |
+| ❌ | HH LED effect invocation needs hardware validation for `MMU_SET_LED EXIT_EFFECT=<shared_tag_read_effect> DURATION=3`. | Happy Hare runtime, LED config | |
+| ✅ | Auto-created Spoolman spool IDs run `MMU_SPOOLMAN REFRESH=1 QUIET=1` at `PRELOAD_CHECK` time before `MMU_GATE_MAP NEXT_SPOOLID=<id>`. Refresh failure keeps the pending spool for retry. | `klippy/extras/nfc_gates/nfc_manager.py`, `tests/test_shared_reader.py`, Happy Hare runtime | |
+
+## Audit Notes
+
+- The active terminology is **shared** throughout this feature.
+- The design says shared-only installs do not need `[nfc_gate laneN]` sections.
+  The installer path matches that by writing only `[nfc_gate shared]` hardware.
+- The remaining implementation risk is hardware/runtime validation. The shared
+  path needs one real Happy Hare integration pass for `NEXT_SPOOLID`,
+  idle-timeout pause/resume, and LED effect invocation.
+
+---

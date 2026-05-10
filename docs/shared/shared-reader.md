@@ -38,7 +38,7 @@ When a rich tag arrives with no spool ID the shared reader treats it as unresolv
 
 1. **Shared reader is polling.** `startup_polling: 1` starts it at boot. It scans continuously, pausing automatically when printing starts and resuming when printing completes — no manual intervention required.
 
-2. **Tap your spool tag on the shared reader.** NFC reads the UID and looks it up in Spoolman. On success the spool ID is stored as pending, the `shared_pending_timeout` countdown starts, and polling stops. An LED effect fires if `shared_tag_read_effect` is configured.
+2. **Tap your spool tag on the shared reader.** NFC reads the UID and looks it up in Spoolman. On success the spool ID is stored as pending, the `shared_pending_timeout` countdown starts, and polling stops. An LED effect fires if `shared_tag_read_effect` is configured. If the LED effect fails, NFC logs and reports a warning but the spool remains staged.
 
 3. **Drop the spool into an MMU lane** (physical action — NFC takes no action here).
 
@@ -46,7 +46,7 @@ When a rich tag arrives with no spool ID the shared reader treats it as unresolv
 
 5. **Happy Hare fires `user_pre_load_extension` → `_NFC_SHARED_PRELOAD` macro → `NFC_SHARED PRELOAD_CHECK=1`.** This happens automatically — no user action required.
 
-6. **`PRELOAD_CHECK` runs.** Checks only that the printer is not actively printing. Issues `MMU_GATE_MAP NEXT_SPOOLID=<spool_id>` to stage the spool for the gate Happy Hare is about to load. Pending state is cleared.
+6. **`PRELOAD_CHECK` runs.** Checks only that the printer is not actively printing. For auto-created Spoolman spools, NFC first runs `MMU_SPOOLMAN REFRESH=1 QUIET=1` so HH can see the new spool. Then it issues `MMU_GATE_MAP NEXT_SPOOLID=<spool_id>` to stage the spool for the gate Happy Hare is about to load. Pending state is cleared only after Happy Hare accepts the command; if refresh or `MMU_GATE_MAP` fails, the pending spool is kept so you can retry after fixing the HH/config issue.
 
 7. **Happy Hare completes the pregate load and assigns the staged spool ID** to the loaded gate. The spool is now registered in HH's gate map.
 
@@ -78,7 +78,8 @@ NFC[shared]: tag uid=<uid> not found in Spoolman after 3 attempts —
 use MMU_PRELOAD to load without spool assignment
 ```
 
-The counter resets on a successful read, `NFC_SHARED CLEAR=1`, or `NFC_SHARED READ=1`.
+The counter resets on a successful read, `NFC_SHARED CLEAR=1`,
+`NFC_SHARED READ=1`, or `NFC_SHARED REPLACE=1`.
 
 ---
 
@@ -182,17 +183,33 @@ Set `shared_tag_read_effect: mmu_RFID_read` in `[nfc_gate shared]`. The effect p
 
 | Command | What it does |
 |---|---|
-| `NFC_SHARED READ=1` | Start polling. Clears any pending spool and restarts the scan. |
+| `NFC_SHARED READ=1` | Start polling. Refuses to overwrite a pending spool; use `REPLACE=1` or `CANCEL=1` first. Rejected while printing. |
 | `NFC_SHARED READ=0` | Stop polling. Keeps any pending spool. |
-| `NFC_SHARED STATUS=1` | Show current state — idle, polling, pending spool with time remaining, expired, or error. |
+| `NFC_SHARED STATUS=1` | Show detailed state — summary, polling flags, deadlines, pending spool, miss counter, LED effect, last action, next action, and last error. |
+| `NFC_SHARED SUMMARY=1` | Show one compact state line and next suggested action. |
+| `NFC_SHARED HELP=1` | Show shared reader command help. |
+| `NFC_SHARED CANCEL=1` | Cancel a staged spool and stop polling. |
+| `NFC_SHARED REPLACE=1` | Discard a staged spool and start scanning another. |
+| `NFC_SHARED RETRY=1` | Retry staging after fixing an HH/Spoolman issue. |
+| `NFC_SHARED LED_TEST=1` | Test the configured shared tag-read LED effect. |
+
+Advanced shared-reader commands:
+
+| Command | What it does |
+|---|---|
 | `NFC_SHARED CLEAR=1` | Clear pending state, stop polling, reset the reader. |
 | `NFC_SHARED PRELOAD_CHECK=1` | Stage `NEXT_SPOOLID` if a valid spool is pending. Called automatically by the HH hook. |
-| `NFC_SHARED POLL=1` | Force one full read/resolve cycle. |
-| `NFC_SHARED SCAN=1` | Raw hardware scan — shows UID only, no Spoolman lookup. |
-| `NFC_SHARED INIT=1` | Re-run PN532 initialisation. Use after a wiring fault or reader failure. |
+| `NFC_SHARED POLL=1` | Force one full read/resolve cycle. Skips while printing. |
+| `NFC_SHARED SCAN=1` | Raw hardware scan — shows UID only, no Spoolman lookup. Skips while printing. |
+| `NFC_SHARED INIT=1` | Re-run PN532 initialisation. Resumes startup polling when enabled and safe. |
 | `NFC_SHARED CLEAR_CACHE=1` | Clear the tag UID cache without clearing the pending spool. |
 
 Full command reference: [Commands & Macros](klipper-functions.md#shared-reader).
+
+If another valid tag is read while a spool is already pending, the shared
+reader keeps the original pending spool. The new read is reported as ignored,
+and the console points you to `NFC_SHARED REPLACE=1` if you meant to swap
+spools.
 
 ---
 
@@ -204,8 +221,12 @@ Run `NFC_SHARED INIT=1`. If it fails, check I2C wiring and confirm the MCU is fl
 **Tag scanned but spool not staged at preload.**
 Check that `variable_user_pre_load_extension: '_NFC_SHARED_PRELOAD'` is set in `mmu_macro_vars.cfg` and that the printer was not actively printing when the preload fired.
 
+If the console reports `MMU_SPOOLMAN REFRESH failed` or `MMU_GATE_MAP failed`,
+the pending spool was kept. Fix the HH/Spoolman issue, then run
+`NFC_SHARED RETRY=1` or `NFC_SHARED PRELOAD_CHECK=1` again.
+
 **`NFC_STATUS` shows `expired`.**
-The `shared_pending_timeout` elapsed before the preload fired. Tap the tag again. Increase `shared_pending_timeout` if you regularly take longer than 120 s between tapping and loading.
+The `shared_pending_timeout` elapsed before the preload fired. The expired pending spool is cleared automatically; with `startup_polling: 1`, polling resumes. Tap the tag again. Increase `shared_pending_timeout` if you regularly take longer than 120 s between tapping and loading.
 
 **Console shows "tag uid not found in Spoolman after N attempts".**
 The tag is not registered in Spoolman. Either register the spool first or use `MMU_PRELOAD` to load without spool assignment.

@@ -456,15 +456,43 @@ print('mmu')
 PYEOF
 }
 
+detect_shared_i2c_bus() {
+    local shared_cfg="$1"
+    python3 - "${shared_cfg}" <<'PYEOF'
+import sys
+
+try:
+    text = open(sys.argv[1], 'r').read()
+except FileNotFoundError:
+    print('i2c1')
+    raise SystemExit
+
+in_shared = False
+for line in text.splitlines():
+    stripped = line.strip()
+    if stripped == '[nfc_gate shared]':
+        in_shared = True
+        continue
+    if in_shared:
+        if stripped.startswith('['):
+            break
+        if stripped.startswith('i2c_bus:'):
+            print(stripped.split(':', 1)[1].strip())
+            raise SystemExit
+print('i2c1')
+PYEOF
+}
+
 write_shared_config() {
     local file_path="$1"
     local i2c_mcu="$2"
-    local startup_polling_val="$3"
+    local i2c_bus="$3"
+    local startup_polling_val="$4"
 
-    python3 - "${file_path}" "${i2c_mcu}" "${startup_polling_val}" <<'PYEOF'
+    python3 - "${file_path}" "${i2c_mcu}" "${i2c_bus}" "${startup_polling_val}" <<'PYEOF'
 import sys
 
-path, i2c_mcu, startup_polling = sys.argv[1:4]
+path, i2c_mcu, i2c_bus, startup_polling = sys.argv[1:5]
 
 with open(path, 'w') as f:
     f.write("# =============================================================================\n")
@@ -493,7 +521,7 @@ with open(path, 'w') as f:
     f.write("# =============================================================================\n\n")
     f.write("[nfc_gate shared]\n")
     f.write(f"i2c_mcu:                {i2c_mcu}\n")
-    f.write(f"i2c_bus:                i2c1\n")
+    f.write(f"i2c_bus:                {i2c_bus}\n")
     f.write(f"i2c_address:            0x24\n")
     f.write(f"shared:                 true\n")
     f.write(f"startup_polling:        {startup_polling}\n")
@@ -636,7 +664,12 @@ else
         "4. Klipper MCU the shared PN532 is wired to (must match a [mcu ...] section)" \
         "${DEFAULT_I2C_MCU}"
 
-    echo "5. Tag read mode"
+    DEFAULT_I2C_BUS="$(detect_shared_i2c_bus "${NFC_READER_SHARED_CFG}")"
+    prompt_with_default I2C_BUS \
+        "5. I2C bus on that MCU for the shared PN532 (real SDA/SCL pins)" \
+        "${DEFAULT_I2C_BUS}"
+
+    echo "6. Tag read mode"
     echo "   $(choice_style spoolman) = UID-only lookup in Spoolman's extra field (default)"
     echo "   $(choice_style rich)     = read tag metadata, then resolve/create Spoolman records"
     prompt_choice TAG_MODE \
@@ -653,10 +686,10 @@ else
         echo "   Factory-tagged Bambu spools are MIFARE Classic and require"
         echo "   authenticated reads plus the pycryptodome HKDF dependency."
         prompt_yes_no BAMBU_READS \
-            "6. Will you read factory-tagged Bambu spools with rich metadata?" \
+            "7. Will you read factory-tagged Bambu spools with rich metadata?" \
             "no"
         prompt_yes_no SPOOLMAN_AUTO_CREATE \
-            "7. Auto-create missing Spoolman spools from rich tag metadata?" \
+            "8. Auto-create missing Spoolman spools from rich tag metadata?" \
             "yes"
     fi
 
@@ -817,7 +850,7 @@ set_config_value "${NFC_READER_CFG}" "nfc_gate" "spoolman_auto_create" \
 
 if [ "${READER_TYPE}" = "shared" ]; then
     # startup_polling and scan_enabled live in [nfc_gate shared], not [nfc_gate]
-    write_shared_config "${NFC_READER_SHARED_CFG}" "${I2C_MCU}" \
+    write_shared_config "${NFC_READER_SHARED_CFG}" "${I2C_MCU}" "${I2C_BUS}" \
         "$( [ "${STARTUP_POLLING}" = "yes" ] && echo "1" || echo "0" )"
 else
     set_config_value "${NFC_READER_CFG}" "nfc_gate" "startup_polling" \
@@ -891,6 +924,7 @@ if [ "${READER_TYPE}" = "lane" ]; then
     echo "    lanes:              ${LANE_COUNT}"
 else
     echo "    i2c_mcu:            ${I2C_MCU}"
+    echo "    i2c_bus:            ${I2C_BUS}"
 fi
 echo "    spoolman_url:       ${SPOOLMAN_URL}"
 echo "    startup_polling:    ${STARTUP_POLLING}"
@@ -930,7 +964,7 @@ echo ""
 
 if [ "${READER_TYPE}" = "shared" ]; then
     echo "  1. Confirm i2c_mcu and i2c_bus in nfc_reader_shared.cfg match your hardware."
-    echo "     The installer wrote i2c_mcu: ${I2C_MCU} — edit if your MCU name differs."
+    echo "     The installer wrote i2c_mcu: ${I2C_MCU} and i2c_bus: ${I2C_BUS}."
     echo ""
     echo "  2. Add includes to printer.cfg:"
     echo "       [include nfc/nfc_reader.cfg]"
