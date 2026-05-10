@@ -118,6 +118,15 @@ class _BusDefaultConfig:
 # Module-level registry for NFC_STATUS across all configured lanes.
 _lane_instances = []
 
+# Single shared reader instance, set by NFCGate._handle_connect when shared=true.
+_shared_instance = None
+
+# Internal gate number for the shared reader.  Not exposed to users — the shared
+# reader has no Happy Hare gate assignment and does not use this value for HH
+# orchestration.  It serves only as a unique key for PN532Driver / GateState
+# logging and (internally) as a guard against accidentally seeding from HH.
+_SHARED_GATE_SENTINEL = 255
+
 
 def _status_html_words(text):
     text = re.sub(r'\bavailable\b',
@@ -155,7 +164,9 @@ def _lane_status_lines(printer):
         lines = ["NFC gate status  (%d gate%s configured):"
                  % (len(nfc_by_lane), 's' if len(nfc_by_lane) != 1 else '')]
         for gate in sorted(_lane_instances, key=lambda g: g._gate):
-            lines.append(gate.status_line())
+            if not getattr(gate, '_shared', False):
+                lines.append(gate.status_line())
+        _append_shared_status(lines)
         return lines
 
     lines = ["NFC gate status — %d MMU lane(s), %d NFC reader(s) configured:"
@@ -165,7 +176,13 @@ def _lane_status_lines(printer):
             lines.append(nfc_by_lane[lane].status_line())
         else:
             lines.append("  %-8s  no NFC reader configured" % (lane + ':'))
+    _append_shared_status(lines)
     return lines
+
+
+def _append_shared_status(lines):
+    if _shared_instance is not None:
+        lines.append(_shared_instance.shared_status_line())
 
 
 class NFCGateDefaults:
@@ -259,8 +276,24 @@ class NFCGate:
         self._name    = config.get_name().split()[-1]
 
         d = defaults
-        self._defaults         = defaults
-        self._gate             = config.getint('mmu_gate', minval=0)
+        self._defaults = defaults
+
+        # Read shared first — it controls how subsequent params are parsed.
+        self._shared = config.getboolean('shared', False)
+        if self._shared:
+            for existing in _lane_instances:
+                if getattr(existing, '_shared', False):
+                    raise config.error(
+                        "nfc_gate [%s]: only one shared reader may be configured"
+                        % self._name)
+
+        # Gate number: required for lane readers; internal sentinel for shared.
+        # The shared reader has no HH gate assignment — the sentinel is never
+        # passed to Happy Hare and is not user-configurable.
+        if self._shared:
+            self._gate = _SHARED_GATE_SENTINEL
+        else:
+            self._gate = config.getint('mmu_gate', minval=0)
         self._poll_interval    = config.getfloat('poll_interval',
                                                   d.poll_interval if d else 10.,
                                                   minval=1., maxval=3600.)
@@ -338,7 +371,8 @@ class NFCGate:
         self._reader     = PN532Driver(i2c, self._gate,
                                        transceive_delay, crc_delay,
                                        self._debug,
-                                       low_level_debug=self._low_level_debug)
+                                       low_level_debug=self._low_level_debug,
+                                       sleep_fn=self._reactor_sleep)
         self._state      = GateState(self._gate, self._absent_threshold)
         self._suppress_next_dispatch_uid   = None
         self._suppress_next_dispatch_spool = None  # paired with uid — suppress only when both match
@@ -364,8 +398,12 @@ class NFCGate:
         self._scan_poll_interval = config.getfloat('scan_poll_interval',
                                                     d.scan_poll_interval if d else 0.1,
                                                     minval=0.1, maxval=5.0)
-        self._scan_enabled  = config.getboolean('scan_enabled',
-                                                 d.scan_enabled if d else True)
+        # scan_enabled: forced false for shared (no physical EMU lane for jog).
+        if self._shared:
+            self._scan_enabled = False
+        else:
+            self._scan_enabled = config.getboolean('scan_enabled',
+                                                    d.scan_enabled if d else True)
         self._tag_parsing          = config.getboolean('tag_parsing',
                                                         d.tag_parsing if d else False)
         self._tag_max_pages        = config.getint('tag_max_pages',
@@ -390,10 +428,32 @@ class NFCGate:
         self._scan_pending           = False  # armed on 0→1 edge; fires when HH confirms idle
         self._scan_deferred_notified = False  # True after first console msg for this deferral
 
+        # ── Shared reader config and state ───────────────────────────────────
+        # (_shared, _gate, _scan_enabled already set above)
+        if self._shared:
+            self._shared_pending_timeout = config.getfloat(
+                'shared_pending_timeout', 120.0, minval=1.0)
+            self._shared_read_timeout = config.getfloat(
+                'shared_read_timeout', 120.0, minval=1.0)
+            self._shared_tag_read_effect = config.get(
+                'shared_tag_read_effect', '')
+        else:
+            self._shared_pending_timeout = 120.0
+            self._shared_read_timeout    = 120.0
+            self._shared_tag_read_effect = ''
+
+        self._shared_pending_uid        = None
+        self._shared_pending_spool      = None
+        self._shared_pending_deadline   = 0.0
+        self._shared_pending_auto_created = False
+        self._shared_last_error         = None
+        self._shared_read_deadline      = 0.0
+
         # delayed-init state
         self._gcode = None
         self._commands_registered = False
         self._status_registered = False
+        self._shared_cmd_registered = False
 
         self.printer.register_event_handler('klippy:connect',
                                             self._handle_connect)
@@ -456,10 +516,21 @@ class NFCGate:
                 gcmd.respond_info("NFC[%s]: reader failed; run INIT=1 first"
                                   % self._name)
                 return
+            if self._shared:
+                if self._shared_pending_spool is not None:
+                    logger.info(
+                        "nfc_gate: [%s] READ=1 while pending spool=%s — "
+                        "clearing pending and restarting scan",
+                        self._name, self._shared_pending_spool)
+                    self._shared_clear_pending()
+                self._shared_read_deadline = (
+                    self.reactor.monotonic() + self._shared_read_timeout)
             self._polling = True
             self.reactor.update_timer(self._poll_timer, self.reactor.NOW)
             gcmd.respond_info("NFC[%s]: polling started" % self._name)
         else:
+            if self._shared:
+                self._shared_read_deadline = 0.0
             self._polling = False
             self.reactor.update_timer(self._poll_timer, self.reactor.NEVER)
             gcmd.respond_info("NFC[%s]: polling stop requested" % self._name)
@@ -668,6 +739,7 @@ class NFCGate:
                 "NFC[%s]: HH reports gate empty — seed cleared" % self._name)
 
     def _handle_connect(self):
+        global _shared_instance
         self._gcode = self.printer.lookup_object('gcode')
 
         if not self._commands_registered:
@@ -684,15 +756,27 @@ class NFCGate:
                 )
                 self._status_registered = True
 
-            self._gcode.register_mux_command(
-                cmd='NFC',
-                key='GATE',
-                value=str(self._gate),
-                func=self.cmd_NFC,
-                desc="Control or test one configured NFC gate"
-            )
+            # Shared reader has no mmu_gate — all interaction goes through
+            # NFC_SHARED.  Lane readers register the GATE mux command.
+            if not self._shared:
+                self._gcode.register_mux_command(
+                    cmd='NFC',
+                    key='GATE',
+                    value=str(self._gate),
+                    func=self.cmd_NFC,
+                    desc="Control or test one configured NFC gate"
+                )
 
             self._commands_registered = True
+
+        if self._shared and not self._shared_cmd_registered:
+            _shared_instance = self
+            self._gcode.register_command(
+                'NFC_SHARED',
+                self.cmd_NFC_SHARED,
+                desc="Control the shared NFC reader (STATUS, CLEAR, PRELOAD_CHECK)"
+            )
+            self._shared_cmd_registered = True
 
         self._gcode.respond_info(f"📡 NFC Gate [{self._name}] connected")
 
@@ -729,7 +813,8 @@ class NFCGate:
 
         # Seed lane cache from Happy Hare's current gate map so the first poll
         # after restart does not re-dispatch a spool HH already knows about.
-        if not self._failed:
+        # Shared reader has no HH gate assignment to seed and no scan-jog edge detector.
+        if not self._failed and not self._shared:
             self._seed_cache_from_hh(eventtime)
             # Bootstrap the scan-jog edge detector with the current gate status
             # so a pre-loaded gate never triggers a scan on the first poll.
@@ -739,10 +824,19 @@ class NFCGate:
 
         if self._gcode is not None:
             if self._failed:
+                init_cmd = "NFC_SHARED INIT=1" if self._shared else "NFC GATE=%d INIT=1" % self._gate
                 self._gcode.respond_info(
                     "❌ NFC[%s]: reader not ready — check wiring. "
-                    "Run NFC GATE=%d INIT=1 after fixing."
-                    % (self._name, self._gate))
+                    "Run %s after fixing."
+                    % (self._name, init_cmd))
+            elif self._shared:
+                self._gcode.respond_info(
+                    "✅ NFC[%s]: shared reader ready.  %s"
+                    % (self._name,
+                       "Startup polling is enabled; first poll in %.1fs."
+                       % self._startup_poll_delay
+                       if self._startup_polling == 1
+                       else "Run NFC_SHARED READ=1 to start polling."))
             else:
                 seed_note = ("  HH seed: spool_id=%d" % self._hh_seed_spool_id
                              if self._hh_seed_spool_id is not None
@@ -777,6 +871,9 @@ class NFCGate:
         if NFCGate._active_scan_gate == self._gate:
             NFCGate._active_scan_gate = None
 
+    def _reactor_sleep(self, duration):
+        self.reactor.pause(self.reactor.monotonic() + duration)
+
     def _poll_timer_event(self, eventtime):
         if not self._polling:
             return self.reactor.NEVER
@@ -786,6 +883,17 @@ class NFCGate:
                            self._name, self._gate)
             self._polling = False
             return self.reactor.NEVER
+
+        # Shared read-timeout: stop polling if READ=1 has been active too long
+        # without resolving a valid tag.
+        if self._shared and self._shared_read_deadline > 0.0:
+            if eventtime >= self._shared_read_deadline:
+                logger.info(
+                    "nfc_gate: [%s] shared read timeout (%.0fs) — stopping poll",
+                    self._name, self._shared_read_timeout)
+                self._shared_read_deadline = 0.0
+                self._polling = False
+                return self.reactor.NEVER
 
         # Scan-jog gate-status edge detection.
         # Reads HH gate_status on every tick — Python dict only, no I2C.
@@ -971,9 +1079,24 @@ class NFCGate:
         return hh.present and hh.spool == nfc_spool
 
     def _poll(self):
-        if self._poll_hh_pause_check():
-            return
-        self._check_hh_cleared()
+        if self._shared:
+            if self._is_printing():
+                if self._debug >= 3:
+                    logger.debug(
+                        "nfc_gate: [%s] shared poll skipped — printing",
+                        self._name)
+                return
+            hh = self._read_hh_status()
+            if hh.present and not hh.idle:
+                if self._debug >= 3:
+                    logger.debug(
+                        "nfc_gate: [%s] shared poll skipped — HH action=%s",
+                        self._name, hh.action)
+                return
+        else:
+            if self._poll_hh_pause_check():
+                return
+            self._check_hh_cleared()
         uid_hex = self._read_current_tag()
         if uid_hex is not None and uid_hex == self._state.current_uid:
             self._state.miss_count = 0
@@ -1073,6 +1196,10 @@ class NFCGate:
         if self._debug >= 3:
             logger.info("nfc_gate: [%s] gate %d — %s uid=%s spool=%s",
                         self._name, gate, event_type, uid, spool)
+
+        if self._shared:
+            self._shared_handle_event(event_type, uid, spool)
+            return
 
         suppress = (self._hh_seed_spool_id is not None
                     and event_type == EVENT_CHANGED
@@ -1341,6 +1468,187 @@ class NFCGate:
         return _status_html_words(
             "  Gate %d:  empty   [%s]%s%s"
             % (self._gate, poll_state, sync_note, hh_bracket))
+
+    # ── Shared reader ────────────────────────────────────────────────────────
+
+    def _shared_handle_event(self, event_type, uid, spool):
+        if event_type == EVENT_CHANGED and spool is not None:
+            auto_created = False
+            if self._state.current_tag is not None:
+                res = self._state.current_tag.resolution or {}
+                auto_created = isinstance(res, dict) and res.get('path') == 'auto_create'
+            self._shared_pending_uid      = uid
+            self._shared_pending_spool    = spool
+            self._shared_pending_deadline = (
+                self.reactor.monotonic() + self._shared_pending_timeout)
+            self._shared_pending_auto_created = auto_created
+            self._shared_last_error       = None
+            self._shared_read_deadline    = 0.0
+            # Stop polling — pending spool survives tag removal.
+            self._polling = False
+            self.reactor.update_timer(self._poll_timer, self.reactor.NEVER)
+            logger.info(
+                "nfc_gate: [%s] shared tag resolved — spool=%d uid=%s "
+                "auto_created=%s pending for %.0fs",
+                self._name, spool, uid, auto_created,
+                self._shared_pending_timeout)
+            if self._shared_tag_read_effect:
+                try:
+                    self._gcode.run_script(
+                        "MMU_SET_LED EXIT_EFFECT=%s DURATION=3"
+                        % self._shared_tag_read_effect)
+                except Exception as e:
+                    logger.debug(
+                        "nfc_gate: [%s] shared LED effect failed (no HH LEDs?): %s",
+                        self._name, e)
+
+        elif event_type == EVENT_UID_ONLY:
+            if self._shared_pending_spool is None:
+                self._shared_last_error = "tag uid=%s not in Spoolman" % uid
+                logger.info(
+                    "nfc_gate: [%s] shared UID-only — %s",
+                    self._name, self._shared_last_error)
+
+        elif event_type == EVENT_REMOVED:
+            if self._debug >= 3:
+                logger.debug(
+                    "nfc_gate: [%s] shared tag removed — "
+                    "pending spool=%s kept",
+                    self._name, self._shared_pending_spool)
+
+    def _shared_expire_pending_if_needed(self):
+        if (self._shared_pending_spool is not None
+                and self.reactor.monotonic() >= self._shared_pending_deadline):
+            logger.info(
+                "nfc_gate: [%s] shared pending spool=%d expired",
+                self._name, self._shared_pending_spool)
+            self._shared_clear_pending()
+
+    def _shared_clear_pending(self):
+        if self._debug >= 4:
+            logger.debug(
+                "nfc_gate: [%s] shared pending cleared "
+                "(was spool=%s uid=%s)",
+                self._name,
+                self._shared_pending_spool,
+                self._shared_pending_uid)
+        self._shared_pending_uid          = None
+        self._shared_pending_spool        = None
+        self._shared_pending_deadline     = 0.0
+        self._shared_pending_auto_created = False
+
+    def _shared_preload_check(self, gcmd):
+        if self._is_printing():
+            if self._debug >= 3:
+                logger.info(
+                    "nfc_gate: [%s] PRELOAD_CHECK skipped — printing",
+                    self._name)
+            return
+        hh = self._read_hh_status()
+        if hh.present and not hh.idle:
+            if self._debug >= 3:
+                logger.info(
+                    "nfc_gate: [%s] PRELOAD_CHECK skipped — HH action=%s",
+                    self._name, hh.action)
+            return
+        self._shared_expire_pending_if_needed()
+        if self._shared_pending_spool is None:
+            if self._debug >= 3:
+                logger.info(
+                    "nfc_gate: [%s] PRELOAD_CHECK — no pending spool",
+                    self._name)
+            return
+        spool_id = self._shared_pending_spool
+        logger.info(
+            "nfc_gate: [%s] PRELOAD_CHECK — staging NEXT_SPOOLID=%d",
+            self._name, spool_id)
+        self._shared_clear_pending()
+        try:
+            self._gcode.run_script(
+                "MMU_GATE_MAP NEXT_SPOOLID=%d" % spool_id)
+        except Exception as e:
+            logger.error(
+                "nfc_gate: [%s] PRELOAD_CHECK — MMU_GATE_MAP failed: %s",
+                self._name, e)
+            return
+        # Auto-restart polling so the reader is immediately ready for the
+        # next spool without any user action.  Clear the read deadline so
+        # this session runs indefinitely (no shared_read_timeout re-applied).
+        self._shared_read_deadline = 0.0
+        self._polling = True
+        self.reactor.update_timer(self._poll_timer, self.reactor.NOW)
+        logger.info(
+            "nfc_gate: [%s] PRELOAD_CHECK — staged spool %d; "
+            "polling restarted for next spool",
+            self._name, spool_id)
+
+    def shared_status_line(self):
+        now = self.reactor.monotonic()
+        if self._failed:
+            return "  shared:  READER FAILED (check wiring)"
+        if self._shared_pending_spool is not None:
+            remaining = max(0.0, self._shared_pending_deadline - now)
+            if remaining <= 0.0:
+                return ("  shared:  expired  spool %d  uid=%s"
+                        % (self._shared_pending_spool,
+                           self._shared_pending_uid or ''))
+            return ("  shared:  pending spool %d  uid=%s  expires in %.0fs"
+                    % (self._shared_pending_spool,
+                       self._shared_pending_uid or '',
+                       remaining))
+        if self._shared_last_error:
+            return "  shared:  error  %s" % self._shared_last_error
+        if self._polling:
+            return "  shared:  polling, no tag pending"
+        return "  shared:  idle"
+
+    def cmd_NFC_SHARED(self, gcmd):
+        read_value = gcmd.get("READ", None)
+        if read_value is not None:
+            self._set_reading(gcmd, gcmd.get_int("READ", minval=0, maxval=1) == 1)
+            return
+        if gcmd.get_int('STATUS', 0):
+            gcmd.respond_info(self.shared_status_line())
+            return
+        if gcmd.get_int('CLEAR', 0):
+            self._shared_clear_pending()
+            self._shared_last_error = None
+            self._polling = False
+            self._shared_read_deadline = 0.0
+            self.reactor.update_timer(self._poll_timer, self.reactor.NEVER)
+            self._state.current_uid   = None
+            self._state.current_spool = None
+            gcmd.respond_info("NFC[%s]: shared state cleared" % self._name)
+            return
+        if gcmd.get_int('PRELOAD_CHECK', 0):
+            self._shared_preload_check(gcmd)
+            return
+        if gcmd.get_int('POLL', 0):
+            self._poll()
+            gcmd.respond_info("NFC[%s]: one poll complete; %s" %
+                              (self._name, self.status_line().strip()))
+            return
+        if gcmd.get_int('SCAN', 0):
+            self._manual_scan(gcmd)
+            return
+        if gcmd.get_int('INIT', 0):
+            self._manual_init(gcmd)
+            return
+        if gcmd.get_int('CLEAR_CACHE', 0):
+            self._clear_spool_cache(gcmd)
+            return
+        gcmd.respond_info(
+            "NFC_SHARED commands:\n"
+            "  NFC_SHARED READ=1          - start polling\n"
+            "  NFC_SHARED READ=0          - stop polling (keeps pending spool)\n"
+            "  NFC_SHARED STATUS=1        - show pending spool / state\n"
+            "  NFC_SHARED CLEAR=1         - clear pending state and stop polling\n"
+            "  NFC_SHARED PRELOAD_CHECK=1 - stage NEXT_SPOOLID if pending spool valid\n"
+            "  NFC_SHARED POLL=1          - run one full read/resolve cycle\n"
+            "  NFC_SHARED SCAN=1          - raw hardware scan only\n"
+            "  NFC_SHARED INIT=1          - re-run PN532 init\n"
+            "  NFC_SHARED CLEAR_CACHE=1   - clear tag cache (keeps pending spool)"
+        )
 
     def get_status(self, _eventtime=None):
         tag = self._state.current_tag

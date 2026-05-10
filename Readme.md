@@ -83,6 +83,27 @@ This disables gate-status polling entirely — Happy Hare calls NFC only after t
 
 ---
 
+## Shared Reader
+
+An optional single PN532 mounted inside the MMU body — not tied to any EMU lane. Tap a tagged spool on it before loading; Happy Hare automatically assigns that spool to whichever gate gets the next pregate preload.
+
+```
+tap spool on shared reader → blinking LED → spool pending
+insert filament into MMU gate → pregate preload → HH assigns spool ID
+```
+
+Happy Hare already has the mechanism:
+
+```gcode
+MMU_GATE_MAP NEXT_SPOOLID=<spool_id>
+```
+
+The shared reader issues this command at `variable_user_pre_load_extension` time — just before preload starts. Happy Hare assigns it to the loaded gate; NFC clears the pending state.
+
+**Setup:** add `[nfc_gate shared]` to `nfc_reader_hw.cfg` and wire two HH hooks. See [Configuration Reference](docs/shared/configuration.md#shared-reader) for the full config block and [Commands & Macros](docs/shared/klipper-functions.md#shared-reader) for operation.
+
+---
+
 ## Quick Install
 
 > [!IMPORTANT]

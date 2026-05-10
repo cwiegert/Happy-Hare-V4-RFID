@@ -45,10 +45,10 @@ fi
 
 choice_style() {
     case "$1" in
-        auto|spoolman)
+        auto|spoolman|lane)
             printf '%s%s%s%s' "${CYAN}" "${BOLD}" "$1" "${RESET}"
             ;;
-        direct|rich)
+        direct|rich|shared)
             printf '%s' "$1"
             ;;
         *)
@@ -412,6 +412,93 @@ with open(path, 'w') as f:
 PYEOF
 }
 
+detect_reader_type() {
+    local file_path="$1"
+    python3 - "${file_path}" <<'PYEOF'
+import re, sys
+
+path = sys.argv[1]
+try:
+    text = open(path, 'r').read()
+except FileNotFoundError:
+    print('lane')
+    raise SystemExit
+
+if re.search(r'^\[nfc_gate shared\]\s*$', text, flags=re.M):
+    print('shared')
+else:
+    print('lane')
+PYEOF
+}
+
+detect_shared_mcu() {
+    local file_path="$1"
+    python3 - "${file_path}" <<'PYEOF'
+import sys
+
+path = sys.argv[1]
+try:
+    text = open(path, 'r').read()
+except FileNotFoundError:
+    print('mmu')
+    raise SystemExit
+
+in_shared = False
+for line in text.splitlines():
+    stripped = line.strip()
+    if stripped == '[nfc_gate shared]':
+        in_shared = True
+        continue
+    if in_shared:
+        if stripped.startswith('['):
+            break
+        if stripped.startswith('i2c_mcu:'):
+            print(stripped.split(':', 1)[1].strip())
+            raise SystemExit
+print('mmu')
+PYEOF
+}
+
+write_shared_config() {
+    local file_path="$1"
+    local i2c_mcu="$2"
+    local startup_polling_val="$3"
+
+    python3 - "${file_path}" "${i2c_mcu}" "${startup_polling_val}" <<'PYEOF'
+import sys
+
+path, i2c_mcu, startup_polling = sys.argv[1:4]
+
+with open(path, 'w') as f:
+    f.write("# =============================================================================\n")
+    f.write("# EMU NFC Gate Reader — Shared PN532 Hardware\n")
+    f.write("# =============================================================================\n")
+    f.write("# Single reader mounted inside the MMU body.  Tap a tagged spool before\n")
+    f.write("# loading; NFC stages the spool ID for the next pregate preload automatically.\n")
+    f.write("#\n")
+    f.write("# Include after nfc_reader.cfg and nfc_macros.cfg:\n")
+    f.write("#   [include nfc/nfc_reader.cfg]\n")
+    f.write("#   [include nfc/nfc_macros.cfg]\n")
+    f.write("#   [include nfc/nfc_reader_hw.cfg]\n")
+    f.write("#\n")
+    f.write("# ⚠️ After updating Klipper, rebuild and flash the MCU hosting the PN532\n")
+    f.write(f"#    ({i2c_mcu}).  The MCU must be on the same Klipper version as the host.\n")
+    f.write("# =============================================================================\n\n")
+    f.write("[nfc_gate shared]\n")
+    f.write(f"i2c_mcu:                {i2c_mcu}\n")
+    f.write(f"i2c_bus:                i2c1\n")
+    f.write(f"i2c_address:            0x24\n")
+    f.write(f"shared:                 true\n")
+    f.write(f"startup_polling:        {startup_polling}\n")
+    f.write("\n")
+    f.write("# Optional: name of a [mmu_led_effect] to flash on successful tag read\n")
+    f.write("# shared_tag_read_effect: mmu_RFID_read\n")
+    f.write("\n")
+    f.write("# Optional: seconds a scanned spool stays pending before expiring\n")
+    f.write("# shared_pending_timeout: 120.0\n")
+PYEOF
+}
+
 # ── Verify Klipper is present ─────────────────────────────────────────────────
 if [ ! -d "${KLIPPER_EXTRAS}" ]; then
     echo "ERROR: Klipper extras directory not found at ${KLIPPER_EXTRAS}"
@@ -430,61 +517,132 @@ print_banner
 echo "Interactive setup"
 echo ""
 
-DEFAULT_LANE_COUNT="$(count_lane_sections "${NFC_READER_HW_CFG}")"
-prompt_with_default LANE_COUNT \
-    "1. How many NFC readers / lanes are you configuring?" \
-    "${DEFAULT_LANE_COUNT}"
-while ! printf '%s' "${LANE_COUNT}" | grep -Eq '^[1-9][0-9]*$'; do
-    echo "Please enter a whole number greater than zero."
+# ── Q1: Reader type ───────────────────────────────────────────────────────────
+DEFAULT_READER_TYPE="$(detect_reader_type "${NFC_READER_HW_CFG}")"
+echo "1. Reader type"
+echo "   $(choice_style lane)   = per-lane PN532, one per EBB42 board"
+echo "   $(choice_style shared) = single reader inside the MMU body for staging spools"
+prompt_choice READER_TYPE \
+    "   Select reader type" \
+    "${DEFAULT_READER_TYPE}" \
+    "lane" "shared"
+echo ""
+
+# ── Lane path ─────────────────────────────────────────────────────────────────
+if [ "${READER_TYPE}" = "lane" ]; then
+
+    DEFAULT_LANE_COUNT="$(count_lane_sections "${NFC_READER_HW_CFG}")"
     prompt_with_default LANE_COUNT \
-        "1. How many NFC readers / lanes are you configuring?" \
+        "2. How many NFC readers / lanes are you configuring?" \
         "${DEFAULT_LANE_COUNT}"
-done
+    while ! printf '%s' "${LANE_COUNT}" | grep -Eq '^[1-9][0-9]*$'; do
+        echo "Please enter a whole number greater than zero."
+        prompt_with_default LANE_COUNT \
+            "2. How many NFC readers / lanes are you configuring?" \
+            "${DEFAULT_LANE_COUNT}"
+    done
 
-echo "2. Spoolman connection"
-echo "   $(choice_style auto)   = read the URL from Moonraker's [spoolman] section (recommended)"
-echo "   $(choice_style direct) = enter a fixed URL such as http://127.0.0.1:7912"
-prompt_choice SPOOLMAN_MODE \
-    "   Select Spoolman connection mode" \
-    "auto" \
-    "auto" "direct"
-SPOOLMAN_URL="auto"
-if [ "${SPOOLMAN_MODE}" = "direct" ]; then
-    prompt_with_default SPOOLMAN_URL \
-        "   Enter the direct Spoolman URL" \
-        "http://127.0.0.1:7912"
-fi
+    echo "3. Spoolman connection"
+    echo "   $(choice_style auto)   = read the URL from Moonraker's [spoolman] section (recommended)"
+    echo "   $(choice_style direct) = enter a fixed URL such as http://127.0.0.1:7912"
+    prompt_choice SPOOLMAN_MODE \
+        "   Select Spoolman connection mode" \
+        "auto" \
+        "auto" "direct"
+    SPOOLMAN_URL="auto"
+    if [ "${SPOOLMAN_MODE}" = "direct" ]; then
+        prompt_with_default SPOOLMAN_URL \
+            "   Enter the direct Spoolman URL" \
+            "http://127.0.0.1:7912"
+    fi
 
-prompt_yes_no STARTUP_POLLING \
-    "3. Start NFC polling automatically on Klipper startup?" \
-    "yes"
-
-prompt_yes_no SCAN_ENABLED \
-    "4. Enable scan-jog when a loaded tag is out of read range?" \
-    "yes"
-
-echo "5. Tag read mode"
-echo "   $(choice_style spoolman) = UID-only lookup in Spoolman's extra field (default)"
-echo "   $(choice_style rich)     = read tag metadata, then resolve/create Spoolman records"
-prompt_choice TAG_MODE \
-    "   Select tag read mode" \
-    "spoolman" \
-    "spoolman" "rich"
-
-BAMBU_READS="no"
-SPOOLMAN_AUTO_CREATE="no"
-if [ "${TAG_MODE}" = "rich" ]; then
-    echo ""
-    echo "   Rich read supports NTAG/Type-2 metadata tags."
-    echo "   Use rich when you want OpenSpool/OpenPrintTag/Bambu metadata reads."
-    echo "   Factory-tagged Bambu spools are MIFARE Classic and require"
-    echo "   authenticated reads plus the pycryptodome HKDF dependency."
-    prompt_yes_no BAMBU_READS \
-        "6. Will you read factory-tagged Bambu spools with rich metadata?" \
-        "no"
-    prompt_yes_no SPOOLMAN_AUTO_CREATE \
-        "7. Auto-create missing Spoolman spools from rich tag metadata?" \
+    prompt_yes_no STARTUP_POLLING \
+        "4. Start NFC polling automatically on Klipper startup?" \
         "yes"
+
+    prompt_yes_no SCAN_ENABLED \
+        "5. Enable scan-jog when a loaded tag is out of read range?" \
+        "yes"
+
+    echo "6. Tag read mode"
+    echo "   $(choice_style spoolman) = UID-only lookup in Spoolman's extra field (default)"
+    echo "   $(choice_style rich)     = read tag metadata, then resolve/create Spoolman records"
+    prompt_choice TAG_MODE \
+        "   Select tag read mode" \
+        "spoolman" \
+        "spoolman" "rich"
+
+    BAMBU_READS="no"
+    SPOOLMAN_AUTO_CREATE="no"
+    if [ "${TAG_MODE}" = "rich" ]; then
+        echo ""
+        echo "   Rich read supports NTAG/Type-2 metadata tags."
+        echo "   Use rich when you want OpenSpool/OpenPrintTag/Bambu metadata reads."
+        echo "   Factory-tagged Bambu spools are MIFARE Classic and require"
+        echo "   authenticated reads plus the pycryptodome HKDF dependency."
+        prompt_yes_no BAMBU_READS \
+            "7. Will you read factory-tagged Bambu spools with rich metadata?" \
+            "no"
+        prompt_yes_no SPOOLMAN_AUTO_CREATE \
+            "8. Auto-create missing Spoolman spools from rich tag metadata?" \
+            "yes"
+    fi
+
+    I2C_MCU=""   # not applicable for lane installs
+
+# ── Shared path ───────────────────────────────────────────────────────────────
+else
+
+    LANE_COUNT="0"
+    SCAN_ENABLED="no"   # always disabled for shared reader
+
+    echo "2. Spoolman connection"
+    echo "   $(choice_style auto)   = read the URL from Moonraker's [spoolman] section (recommended)"
+    echo "   $(choice_style direct) = enter a fixed URL such as http://127.0.0.1:7912"
+    prompt_choice SPOOLMAN_MODE \
+        "   Select Spoolman connection mode" \
+        "auto" \
+        "auto" "direct"
+    SPOOLMAN_URL="auto"
+    if [ "${SPOOLMAN_MODE}" = "direct" ]; then
+        prompt_with_default SPOOLMAN_URL \
+            "   Enter the direct Spoolman URL" \
+            "http://127.0.0.1:7912"
+    fi
+
+    prompt_yes_no STARTUP_POLLING \
+        "3. Poll at Klipper boot so you can tap a spool at any time? (recommended)" \
+        "yes"
+
+    DEFAULT_I2C_MCU="$(detect_shared_mcu "${NFC_READER_HW_CFG}")"
+    prompt_with_default I2C_MCU \
+        "4. Klipper MCU the shared PN532 is wired to (must match a [mcu ...] section)" \
+        "${DEFAULT_I2C_MCU}"
+
+    echo "5. Tag read mode"
+    echo "   $(choice_style spoolman) = UID-only lookup in Spoolman's extra field (default)"
+    echo "   $(choice_style rich)     = read tag metadata, then resolve/create Spoolman records"
+    prompt_choice TAG_MODE \
+        "   Select tag read mode" \
+        "spoolman" \
+        "spoolman" "rich"
+
+    BAMBU_READS="no"
+    SPOOLMAN_AUTO_CREATE="no"
+    if [ "${TAG_MODE}" = "rich" ]; then
+        echo ""
+        echo "   Rich read supports NTAG/Type-2 metadata tags."
+        echo "   Use rich when you want OpenSpool/OpenPrintTag/Bambu metadata reads."
+        echo "   Factory-tagged Bambu spools are MIFARE Classic and require"
+        echo "   authenticated reads plus the pycryptodome HKDF dependency."
+        prompt_yes_no BAMBU_READS \
+            "6. Will you read factory-tagged Bambu spools with rich metadata?" \
+            "no"
+        prompt_yes_no SPOOLMAN_AUTO_CREATE \
+            "7. Auto-create missing Spoolman spools from rich tag metadata?" \
+            "yes"
+    fi
+
 fi
 
 # ── Symlink Python extras into Klipper ───────────────────────────────────────
@@ -627,11 +785,8 @@ merge_config "${REPO_DIR}/config/nfc_reader_hw.cfg"  "${NFC_READER_HW_CFG}"
 echo ""
 echo "Applying selected settings..."
 
+# Settings common to both reader types
 set_config_value "${NFC_READER_CFG}" "nfc_gate" "spoolman_url" "${SPOOLMAN_URL}"
-set_config_value "${NFC_READER_CFG}" "nfc_gate" "startup_polling" \
-    "$( [ "${STARTUP_POLLING}" = "yes" ] && echo "1" || echo "-1" )"
-set_config_value "${NFC_READER_CFG}" "nfc_gate" "scan_enabled" \
-    "$( [ "${SCAN_ENABLED}" = "yes" ] && echo "True" || echo "False" )"
 set_config_value "${NFC_READER_CFG}" "nfc_gate" "tag_parsing" \
     "$( [ "${TAG_MODE}" = "rich" ] && echo "True" || echo "False" )"
 set_config_value "${NFC_READER_CFG}" "nfc_gate" "bambu_reads" \
@@ -639,7 +794,17 @@ set_config_value "${NFC_READER_CFG}" "nfc_gate" "bambu_reads" \
 set_config_value "${NFC_READER_CFG}" "nfc_gate" "spoolman_auto_create" \
     "$( [ "${SPOOLMAN_AUTO_CREATE}" = "yes" ] && echo "True" || echo "False" )"
 
-write_lane_config "${NFC_READER_HW_CFG}" "${LANE_COUNT}"
+if [ "${READER_TYPE}" = "shared" ]; then
+    # startup_polling and scan_enabled live in [nfc_gate shared], not [nfc_gate]
+    write_shared_config "${NFC_READER_HW_CFG}" "${I2C_MCU}" \
+        "$( [ "${STARTUP_POLLING}" = "yes" ] && echo "1" || echo "0" )"
+else
+    set_config_value "${NFC_READER_CFG}" "nfc_gate" "startup_polling" \
+        "$( [ "${STARTUP_POLLING}" = "yes" ] && echo "1" || echo "-1" )"
+    set_config_value "${NFC_READER_CFG}" "nfc_gate" "scan_enabled" \
+        "$( [ "${SCAN_ENABLED}" = "yes" ] && echo "True" || echo "False" )"
+    write_lane_config "${NFC_READER_HW_CFG}" "${LANE_COUNT}"
+fi
 
 CBOR_STATUS="not needed in UID-only mode"
 if [ "${TAG_MODE}" = "rich" ]; then
@@ -700,10 +865,17 @@ echo ""
 echo "Install complete."
 echo ""
 echo "  Selected options:"
-echo "    lanes:              ${LANE_COUNT}"
+echo "    reader type:        ${READER_TYPE}"
+if [ "${READER_TYPE}" = "lane" ]; then
+    echo "    lanes:              ${LANE_COUNT}"
+else
+    echo "    i2c_mcu:            ${I2C_MCU}"
+fi
 echo "    spoolman_url:       ${SPOOLMAN_URL}"
 echo "    startup_polling:    ${STARTUP_POLLING}"
-echo "    scan_jog:           ${SCAN_ENABLED}"
+if [ "${READER_TYPE}" = "lane" ]; then
+    echo "    scan_jog:           ${SCAN_ENABLED}"
+fi
 if [ "${TAG_MODE}" = "rich" ]; then
     echo "    tag_resolution:     rich tag metadata"
 else
@@ -717,7 +889,6 @@ else
     echo "    bambu_mifare:       installer did not add crypto; UID fallback if absent"
 fi
 echo "    cbor2:              ${CBOR_STATUS}"
-echo "    bambu_dependency:   ${BAMBU_READS}"
 echo "    spool_auto_create:  ${SPOOLMAN_AUTO_CREATE}"
 echo ""
 echo "  Python extras (symlinked — auto-updates with git pull):"
@@ -725,27 +896,57 @@ echo "    ${KLIPPER_EXTRAS}/nfc_gate.py  ->  ${REPO_DIR}/klippy/extras/nfc_gate.
 echo "    ${KLIPPER_EXTRAS}/nfc_gates    ->  ${REPO_DIR}/klippy/extras/nfc_gates/"
 echo ""
 echo "  Config files in ${NFC_CONFIG_DIR}/:"
-echo "    nfc_reader.cfg   ← user settings (Spoolman URL, poll interval, debug)"
-echo "    nfc_macros.cfg ← Happy Hare handoff macros"
-echo "    nfc_reader_hw.cfg  ← hardware layout (one [nfc_gate laneN] per physical reader)"
+echo "    nfc_reader.cfg     ← Spoolman URL, tag parsing, debug settings"
+echo "    nfc_macros.cfg     ← Happy Hare handoff macros"
+if [ "${READER_TYPE}" = "shared" ]; then
+    echo "    nfc_reader_hw.cfg  ← [nfc_gate shared] hardware config"
+else
+    echo "    nfc_reader_hw.cfg  ← hardware layout (one [nfc_gate laneN] per physical reader)"
+fi
 echo ""
 echo "Next steps (first install only):"
 echo ""
-echo "  1. Review ~/printer_data/config/nfc/nfc_reader.cfg"
-echo "     The installer has applied your selected settings."
-echo "     Also review ~/printer_data/config/nfc/nfc_reader_hw.cfg"
-echo "     and confirm each lane's i2c_mcu name matches your Klipper config."
-echo ""
-echo "  2. Add includes to printer.cfg:"
-echo "       [include nfc/nfc_reader.cfg]"
-echo "       [include nfc/nfc_macros.cfg]"
-echo "       [include nfc/nfc_reader_hw.cfg]"
-echo ""
-echo "  3. Restart Klipper:"
-echo "     sudo systemctl restart klipper"
-echo ""
-echo "  4. Update and flash Klipper on each lane MCU / EBB42 board used by NFC."
-echo ""
-echo "  5. Moonraker update_manager — added automatically by this script."
-echo "     If moonraker.conf was not found, add [update_manager emu_nfc_reader] manually."
-echo ""
+
+if [ "${READER_TYPE}" = "shared" ]; then
+    echo "  1. Confirm i2c_mcu and i2c_bus in nfc_reader_hw.cfg match your hardware."
+    echo "     The installer wrote i2c_mcu: ${I2C_MCU} — edit if your MCU name differs."
+    echo ""
+    echo "  2. Add includes to printer.cfg:"
+    echo "       [include nfc/nfc_reader.cfg]"
+    echo "       [include nfc/nfc_macros.cfg]"
+    echo "       [include nfc/nfc_reader_hw.cfg]"
+    echo ""
+    echo "  3. Restart Klipper:"
+    echo "     sudo systemctl restart klipper"
+    echo ""
+    echo "  4. Update and flash the MCU hosting the shared PN532 reader (${I2C_MCU})."
+    echo "     The MCU must be on the same Klipper version as the host."
+    echo ""
+    echo "  5. Wire Happy Hare hooks in mmu_macro_vars.cfg:"
+    echo "       variable_user_pre_load_extension:    '_NFC_SHARED_PRELOAD'"
+    echo "       variable_user_post_unload_extension: '_NFC_SHARED_POST_UNLOAD'"
+    echo "     (post_unload hook is optional when startup_polling is enabled)"
+    echo ""
+    echo "  6. Moonraker update_manager — added automatically by this script."
+    echo "     If moonraker.conf was not found, add [update_manager emu_nfc_reader] manually."
+    echo ""
+else
+    echo "  1. Review ~/printer_data/config/nfc/nfc_reader.cfg"
+    echo "     The installer has applied your selected settings."
+    echo "     Also review ~/printer_data/config/nfc/nfc_reader_hw.cfg"
+    echo "     and confirm each lane's i2c_mcu name matches your Klipper config."
+    echo ""
+    echo "  2. Add includes to printer.cfg:"
+    echo "       [include nfc/nfc_reader.cfg]"
+    echo "       [include nfc/nfc_macros.cfg]"
+    echo "       [include nfc/nfc_reader_hw.cfg]"
+    echo ""
+    echo "  3. Restart Klipper:"
+    echo "     sudo systemctl restart klipper"
+    echo ""
+    echo "  4. Update and flash Klipper on each lane MCU / EBB42 board used by NFC."
+    echo ""
+    echo "  5. Moonraker update_manager — added automatically by this script."
+    echo "     If moonraker.conf was not found, add [update_manager emu_nfc_reader] manually."
+    echo ""
+fi

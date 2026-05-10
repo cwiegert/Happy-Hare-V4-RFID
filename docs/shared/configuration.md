@@ -313,4 +313,83 @@ then keeps the Happy Hare gate available with `SPOOLID=-1`.
 
 ---
 
+---
+
+## Shared Reader
+
+The shared reader is an optional single PN532 mounted inside the MMU body — not tied to any EMU lane. Tap a tagged spool on it before loading; when Happy Hare starts the pregate preload NFC stages the spool ID automatically.
+
+**No per-lane readers are required.** A shared-only installation needs only the base `[nfc_gate]` section (for Spoolman config) and the `[nfc_gate shared]` section. No `[nfc_gate lane0]` or similar sections are needed.
+
+### Config
+
+Add a `[nfc_gate shared]` section to `nfc_reader_hw.cfg`:
+
+```ini
+[nfc_gate shared]
+i2c_mcu:                mmu
+i2c_bus:                i2c1
+i2c_address:            0x24
+shared:                 true
+startup_polling:        1
+```
+
+Full config with all optional keys shown:
+
+```ini
+[nfc_gate shared]
+i2c_mcu:                mmu
+i2c_bus:                i2c1
+i2c_address:            0x24
+shared:                 true
+startup_polling:        1
+poll_interval:          3.0
+shared_pending_timeout: 120.0
+shared_read_timeout:    120.0
+shared_tag_read_effect: mmu_RFID_read
+```
+
+| Setting | Default | Description |
+|---|---|---|
+| `shared` | `false` | Enable shared dispatch for this reader. Must be `true`. |
+| `startup_polling` | `0` | Set to `1` to poll at Klipper boot. Explicit user choice. |
+| `poll_interval` | `3.0` | Seconds between reads while polling is active. |
+| `shared_pending_timeout` | `120.0` | Seconds a scanned spool remains eligible for the next preload. |
+| `shared_read_timeout` | `120.0` | Seconds polling may run without resolving a valid tag before auto-stopping. No effect when started via `startup_polling` or PRELOAD_CHECK auto-restart. |
+| `shared_tag_read_effect` | `''` | Name of a `[mmu_led_effect]` to play on successful tag read. Leave empty to skip LED feedback. |
+
+`mmu_gate` and `scan_enabled` are not written — both are implied by `shared: true` and set internally. Only one shared reader may be configured. The reader inherits `spoolman_url`, `spoolman_rfid_key`, `tag_parsing`, `spoolman_auto_create`, and all logging settings from the base `[nfc_gate]` section.
+
+### Happy Hare hook wiring
+
+Add two user extension hooks to `mmu_macro_vars.cfg`:
+
+```ini
+[gcode_macro _MMU_SEQUENCE_VARS]
+; stage NEXT_SPOOLID before a pregate-triggered automatic preload
+variable_user_pre_load_extension:    '_NFC_SHARED_PRELOAD'
+
+; start shared polling after a gate is unloaded or ejected
+; not needed when startup_polling: 1 — the reader is already polling
+variable_user_post_unload_extension: '_NFC_SHARED_POST_UNLOAD'
+```
+
+`variable_user_post_unload_extension` fires after both `MMU_UNLOAD` and `MMU_EJECT`. `variable_user_pre_load_extension` fires at the start of every load, including pregate preloads — `PRELOAD_CHECK` is a no-op if printing or if no pending spool exists, so it is safe to leave wired for all loads.
+
+Both hooks point to macros shipped in `nfc_macros.cfg`. Override the macro in your own cfg to add pre/post logic without changing the HH variable.
+
+### LED effect
+
+Define a named `[mmu_led_effect]` in your LED config (same style as `emu_macros.cfg`):
+
+```ini
+[mmu_led_effect mmu_RFID_read]
+define_on: gates,exit
+layers: strobe 1 0 top (1.0, 0.75, 0.0)
+```
+
+The effect name must match `shared_tag_read_effect` in the gate config.
+
+---
+
 *Copyright (C) 2026 WoodWorker. Licensed under [GPL-3.0-or-later](https://www.gnu.org/licenses/gpl-3.0.html) — see [LICENSE](../../LICENSE).*
