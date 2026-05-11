@@ -198,9 +198,6 @@ class NFCGateDefaults:
         self.i2c_bus            = config.get('i2c_bus', None)
         self.scan_jog_mm        = config.getfloat('scan_jog_mm', 50.0,
                                                    minval=1.0, maxval=500.0)
-        self.scan_rewind_buffer_mm = config.getfloat(
-            'scan_rewind_buffer_mm', 30.0,
-            minval=0.0, maxval=500.0)
         self.scan_poll_interval = config.getfloat('scan_poll_interval', 0.1,
                                                    minval=0.1, maxval=5.0)
         self.scan_enabled         = config.getboolean('scan_enabled', True)
@@ -354,10 +351,6 @@ class NFCGate:
         self._scan_jog_mm   = config.getfloat('scan_jog_mm',
                                                d.scan_jog_mm if d else 50.0,
                                                minval=1.0, maxval=500.0)
-        self._scan_rewind_buffer_mm = config.getfloat(
-            'scan_rewind_buffer_mm',
-            d.scan_rewind_buffer_mm if d else 30.0,
-            minval=0.0, maxval=500.0)
         self._scan_max_mm   = None
         self._mmu_vars_path = None
         self._bowden_lengths = None
@@ -974,10 +967,7 @@ class NFCGate:
         if self._poll_hh_pause_check():
             return
         self._check_hh_cleared()
-        uid_hex = self._read_current_tag()
-        if uid_hex is not None and uid_hex == self._state.current_uid:
-            self._state.miss_count = 0
-            return True
+        uid_hex  = self._read_current_tag()
         spool_id = self._resolve_spool(uid_hex)
         event    = self._state.process_read(uid_hex, spool_id,
                                             scan_mode=self._scan_mode)
@@ -988,20 +978,6 @@ class NFCGate:
 
     def _poll_hh_pause_check(self):
         """Suspend polling while Happy Hare says filament is still present."""
-        if (not self._scan_mode
-                and self._state.current_uid is not None
-                and self._state.current_spool is None):
-            hh = self._read_hh_status()
-            if hh.present and hh.available:
-                if not self._hh_load_paused:
-                    self._hh_load_paused = True
-                    logger.info(
-                        "nfc_gate: [%s] gate %d — unregistered tag "
-                        "confirmed by NFC; HH reports filament present — "
-                        "suspending poll until ejected",
-                        self._name, self._gate)
-                self._state.miss_count = 0
-                return True
         if (not self._scan_mode
                 and self._hh_gate_matches_current_spool()
                 and self._state.current_spool is not None):
@@ -1014,8 +990,7 @@ class NFCGate:
             self._state.miss_count = 0
             return True
         if self._hh_load_paused:
-            if (self._state.current_uid is None
-                    and self._state.current_spool is None):
+            if self._state.current_spool is None:
                 self._hh_load_paused = False
                 return False
             hh = self._read_hh_status()
@@ -1258,8 +1233,8 @@ class NFCGate:
     def _resume_poll_after_rewind(self):
         return scan_jog.resume_poll_after_rewind(self)
 
-    def _start_scan_mode(self, max_mm=None, sync_hh=True):
-        return scan_jog.start(self, max_mm, sync_hh=sync_hh)
+    def _start_scan_mode(self, max_mm=None):
+        return scan_jog.start(self, max_mm)
 
     def _scan_step_event(self, eventtime):
         return scan_jog.step_event(self, eventtime)
@@ -1309,38 +1284,37 @@ class NFCGate:
                 sync_note = "  [NFC has spool %s; HH found/no spool]" % nfc_spool
             else:
                 sync_note = "  [NFC has spool %s; HH empty]" % nfc_spool
-        hh_bracket = "" if sync_note else "  [%s]" % hh_label
         if hh_empty:
             return _status_html_words(
-                "  Gate %d:  empty   [%s]%s%s"
-                % (self._gate, poll_state, sync_note, hh_bracket))
+                "  Gate %d:  empty   [%s]%s  [%s]"
+                % (self._gate, poll_state, sync_note, hh_label))
         if self._state.current_spool is DIRECT_METADATA_SPOOL:
             meta = (self._state.current_tag.meta
                     if self._state.current_tag is not None else {})
             material = (meta or {}).get('material', '')
             color = (meta or {}).get('color_hex', '')
             return _status_html_words(
-                "  Gate %d:  tag %s  metadata material=%s color=%s   [%s]%s%s"
+                "  Gate %d:  tag %s  metadata material=%s color=%s   [%s]%s  [%s]"
                 % (self._gate, self._state.current_uid,
-                   material, color, poll_state, sync_note, hh_bracket))
+                   material, color, poll_state, sync_note, hh_label))
         if self._state.current_spool is not None:
             return _status_html_words(
-                "  Gate %d:  spool %-2d  UID %s   [%s]%s%s"
+                "  Gate %d:  spool %-2d  UID %s   [%s]%s   [%s]"
                 % (self._gate,
                    self._state.current_spool, self._state.current_uid,
-                   poll_state, sync_note, hh_bracket))
+                   poll_state, sync_note, hh_label))
         if self._state.current_uid is not None:
             return _status_html_words(
-                "  Gate %d:  tag %s  (UID not in Spoolman)   [%s]%s%s"
+                "  Gate %d:  tag %s  (UID not in Spoolman)   [%s]%s  [%s]"
                 % (self._gate, self._state.current_uid, poll_state,
-                   sync_note, hh_bracket))
+                   sync_note, hh_label))
         if hh.present and hh.available:
             return _status_html_words(
-                "  Gate %d:  occupied   [%s]%s%s"
-                % (self._gate, poll_state, sync_note, hh_bracket))
+                "  Gate %d:  occupied   [%s]%s  [%s]"
+                % (self._gate, poll_state, sync_note, hh_label))
         return _status_html_words(
-            "  Gate %d:  empty   [%s]%s%s"
-            % (self._gate, poll_state, sync_note, hh_bracket))
+            "  Gate %d:  empty   [%s]%s  [%s]"
+            % (self._gate, poll_state, sync_note, hh_label))
 
     def get_status(self, _eventtime=None):
         tag = self._state.current_tag
