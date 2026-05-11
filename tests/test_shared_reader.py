@@ -282,6 +282,8 @@ def _make_shared(
     g._shared_pending_timeout     = pending_timeout
     g._shared_read_timeout        = read_timeout
     g._shared_tag_read_effect     = tag_read_effect
+    g._shared_auto_create_effect  = ''
+    g._shared_mcu_index           = None
     g._shared_missed_limit        = missed_limit
     g._shared_force_spool_id      = force_spool_id
     g._has_per_lane_readers       = has_per_lane_readers
@@ -569,7 +571,7 @@ def test_cmd_status_reports_detailed_shared_state():
     assert 'pending spool 42' in status
     assert 'pending_auto_created: yes' in status
     assert 'force_spool_id: on' in status
-    assert 'tag_read_effect: mmu_RFID_read' in status
+    assert 'tag_read_effect:    mmu_RFID_read' in status
     assert 'missed_resolutions: 1/3' in status
     assert 'last_action: tag staged spool 42' in status
     assert 'next: insert filament before timeout' in status
@@ -687,9 +689,9 @@ def test_shared_led_test_plays_configured_effect():
     g = _make_shared(tag_read_effect='mmu_RFID_read')
     gcmd = MockGCmd({'LED_TEST': 1})
     g.cmd_NFC_SHARED(gcmd)
-    assert any('MMU_SET_LED EXIT_EFFECT=mmu_RFID_read DURATION=3' in s
+    assert any('_MMU_SET_LED_EFFECT EFFECT=mmu_RFID_read' in s
                for s in g._gcode.scripts)
-    assert any('LED effect mmu_RFID_read requested' in r
+    assert any('LED effect mmu_RFID_read started' in r
                for r in gcmd.responses)
 
 
@@ -698,7 +700,7 @@ def test_shared_led_test_reports_missing_effect_config():
     gcmd = MockGCmd({'LED_TEST': 1})
     g.cmd_NFC_SHARED(gcmd)
     assert not g._gcode.scripts
-    assert any('no shared_tag_read_effect configured' in r
+    assert any('no LED effect configured' in r
                for r in gcmd.responses)
 
 
@@ -881,7 +883,7 @@ def test_event_removed_keeps_pending():
 def test_event_changed_fires_led_effect():
     g = _make_shared(tag_read_effect='mmu_RFID_read')
     g._shared_handle_event(EVENT_CHANGED, 'AA', 7)
-    assert any('MMU_SET_LED' in s and 'mmu_RFID_read' in s
+    assert any('_MMU_SET_LED_EFFECT' in s and 'mmu_RFID_read' in s
                for s in g._gcode.scripts)
 
 

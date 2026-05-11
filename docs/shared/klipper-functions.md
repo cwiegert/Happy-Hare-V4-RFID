@@ -1,8 +1,10 @@
 # Commands & Macros
 
-[← README](../../Readme.md) | [Configuration →](configuration.md)
+[← README](../../Readme.md) | [Configuration](configuration.md) | [Messages →](message_definition.md)
 
 This is the day-to-day reference for operating the NFC gate reader from the Fluidd/Mainsail console.
+
+For shared reader console and `nfc_reader.log` messages, see [Message Definitions](message_definition.md).
 
 ---
 

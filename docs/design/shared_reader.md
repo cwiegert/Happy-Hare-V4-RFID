@@ -5,7 +5,9 @@
 
 ---
 
-Implementation status and audit notes live in [share_reader_implementation.md](share_reader_implementation.md).
+Implementation status and audit notes live in [shared_reader_implementation.md](shared_reader_implementation.md).
+User-facing console and log output is defined in
+[message_definition.md](../shared/message_definition.md).
 
 ---
 

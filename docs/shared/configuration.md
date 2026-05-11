@@ -195,6 +195,9 @@ console_log_level: warning
 | `console_output` | `False` | Send NFC log messages to the Fluidd/Mainsail console. Errors always appear in the console regardless of this setting. |
 | `console_log_level` | `warning` | Minimum level to show in console when `console_output: True`. Accepts string (`error`, `warning`, `info`, `debug`) or numeric (`1`–`4`). |
 
+Shared reader console messages and their matching `nfc_reader.log` entries are
+defined in [Message Definitions](message_definition.md).
+
 **Recommended for normal printing:**
 ```ini
 console_output:    False

@@ -1,8 +1,10 @@
 # Shared Reader
 
-[← Configuration](configuration.md) | [Commands →](klipper-functions.md)
+[← Configuration](configuration.md) | [Commands](klipper-functions.md) | [Messages →](message_definition.md)
 
 The shared reader is an optional single PN532 mounted **inside the MMU body** — not tied to any EMU lane. You tap a tagged spool on it before loading; when Happy Hare starts the pregate preload NFC stages the spool ID automatically.
+
+For the full console/log message reference, see [Message Definitions](message_definition.md).
 
 ---
 
@@ -59,7 +61,7 @@ When a rich tag arrives with no spool ID the shared reader treats it as unresolv
 If `PRELOAD_CHECK` fires and no valid pending spool exists (none scanned, or the timeout expired), a console message appears:
 
 ```
-NFC[shared]: no spool staged — tap your spool tag on the shared reader first,
+    ⚠️ NFC[shared]: no spool staged — tap your spool tag on the shared reader first,
 or use MMU_PRELOAD to load without spool assignment
 ```
 
@@ -74,7 +76,7 @@ With `force_spool_id: true` the load is **blocked** instead: a gcode error stops
 If the reader reads a UID that Spoolman does not recognise, the miss counter increments. After `shared_missed_limit` consecutive misses (default 3) a console message advises:
 
 ```
-NFC[shared]: tag uid=<uid> not found in Spoolman after 3 attempts —
+⚠️ NFC[shared]: tag uid=<uid> not found in Spoolman after 3 attempts —
 use MMU_PRELOAD to load without spool assignment
 ```
 
