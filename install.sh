@@ -951,14 +951,16 @@ else
 fi
 echo "${DEFAULT}${BOLD}════════════════════════════════════════════════════════════════${RESET}"
 echo ""
-read -r -p "  Proceed with install? [y/N]: " _confirm
-case "${_confirm}" in
-    [yY]|[yY][eE][sS]) ;;
-    *)
-        echo "  Install cancelled — no files were written."
-        exit 0
-        ;;
-esac
+# Debug confirmation prompt kept here for installer development. Normal installs
+# continue after the summary without requiring another prompt.
+# read -r -p "  Proceed with install? [y/N]: " _confirm
+# case "${_confirm}" in
+#     [yY]|[yY][eE][sS]) ;;
+#     *)
+#         echo "  Install cancelled — no files were written."
+#         exit 0
+#         ;;
+# esac
 echo ""
 
 # ── Symlink Python extras into Klipper ───────────────────────────────────────
