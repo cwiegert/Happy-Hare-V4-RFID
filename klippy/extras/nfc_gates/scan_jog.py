@@ -8,7 +8,7 @@ from .log import info_both, logger
 def manual_jog_scan(gate, gcmd):
     """Start scan-and-jog on demand, matching the automatic trigger path."""
     if gate._failed:
-        msg = ("❌ NFC[%s]: reader failed — "
+        msg = ("💥 NFC[%s]: reader failed — "
                "run NFC GATE=%d INIT=1 first"
                % (gate._name, gate._gate))
         logger.error(msg)
@@ -229,7 +229,7 @@ def step_event(gate, eventtime):
         tag_found = gate._poll()
     except Exception:
         logger.exception("nfc_gate: [%s] scan step poll error", gate._name)
-        msg = "❌ NFC[%d]: scan poll failed" % gate._gate
+        msg = "💥 NFC[%d]: scan poll failed" % gate._gate
         logger.error(msg)
         gate._console(msg)
         tag_found = False

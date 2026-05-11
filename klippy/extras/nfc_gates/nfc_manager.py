@@ -534,7 +534,7 @@ class NFCGate:
                     "nfc_gate: [%s] PN532 did not respond — "
                     "check wiring and I2C address (default 0x24)", self._name)
             gcmd.respond_info("%s NFC[%s]: reader %s" %
-                              ("✅" if alive else "❌", self._name,
+                              ("✅" if alive else "💥", self._name,
                                "OK" if alive else "not responding"))
             if (self._shared and alive and self._startup_polling == 1
                     and not self._is_printing()
@@ -550,7 +550,7 @@ class NFCGate:
         except Exception as e:
             self._failed = True
             logger.error("nfc_gate: [%s] init error: %s", self._name, e)
-            gcmd.respond_info("❌ NFC[%s]: init failed: %s" %
+            gcmd.respond_info("💥 NFC[%s]: init failed: %s" %
                               (self._name, e))
 
     def _shared_gate_effect_name(self, base):
@@ -634,7 +634,7 @@ class NFCGate:
                         "nfc_gate: [%s] gate %d READ=1 refused — "
                         "reader failed; run INIT=1 first",
                         self._name, self._gate)
-                gcmd.respond_info("❌ NFC[%s]: reader failed; run INIT=1 first"
+                gcmd.respond_info("💥 NFC[%s]: reader failed; run INIT=1 first"
                                   % self._name)
                 return
             if self._shared:
@@ -996,7 +996,7 @@ class NFCGate:
             if self._failed:
                 init_cmd = "NFC_SHARED INIT=1" if self._shared else "NFC GATE=%d INIT=1" % self._gate
                 self._gcode.respond_info(
-                    "❌ NFC[%s]: reader not ready — check wiring. "
+                    "💥 NFC[%s]: reader not ready — check wiring. "
                     "Run %s after fixing."
                     % (self._name, init_cmd))
             elif self._shared:
@@ -1955,7 +1955,7 @@ class NFCGate:
                     "failed for auto-created spool %d: %s",
                     self._name, spool_id, e)
                 gcmd.respond_info(
-                    "❌ NFC[%s]: MMU_SPOOLMAN REFRESH failed; pending spool %d kept. "
+                    "💥 NFC[%s]: MMU_SPOOLMAN REFRESH failed; pending spool %d kept. "
                     "Fix HH/Spoolman, then run NFC_SHARED PRELOAD_CHECK=1 again"
                     % (self._name, spool_id))
                 self._shared_last_action = (
@@ -1969,7 +1969,7 @@ class NFCGate:
                 "nfc_gate: [%s] PRELOAD_CHECK — MMU_GATE_MAP failed: %s",
                 self._name, e)
             gcmd.respond_info(
-                "❌ NFC[%s]: MMU_GATE_MAP failed; pending spool %d kept. "
+                "💥 NFC[%s]: MMU_GATE_MAP failed; pending spool %d kept. "
                 "Fix Happy Hare, then run NFC_SHARED PRELOAD_CHECK=1 again"
                 % (self._name, spool_id))
             self._shared_last_action = (
@@ -2092,7 +2092,7 @@ class NFCGate:
                 "nfc_gate: [%s] shared REPLACE=1 refused — reader failed; "
                 "run INIT=1 first",
                 self._name)
-            gcmd.respond_info("❌ NFC[%s]: reader failed; run INIT=1 first"
+            gcmd.respond_info("💥 NFC[%s]: reader failed; run INIT=1 first"
                               % self._name)
             return
         if self._is_printing():

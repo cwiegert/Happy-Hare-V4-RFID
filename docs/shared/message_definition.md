@@ -13,7 +13,7 @@ YYYY-MM-DD HH:MM:SS.mmm LEVEL    <message>
 
 Console prefixes are used consistently:
 
-- `❌` means the command or automatic handoff failed.
+- `💥` means NFC tried the operation and it failed.
 - `⚠️` means NFC skipped, ignored, or warned but kept the system recoverable.
 - `⛔` means an action was blocked by a safety/precondition check.
 - `✅` means the requested action completed.
@@ -34,9 +34,9 @@ These apply to both per-lane readers and the shared reader.
 |---|---|---|
 | Reader object connected | `📡 NFC Gate [<name>] connected` | `INFO     nfc_gate: [<name>] connected` |
 | Manual init OK | `✅ NFC[<name>]: reader OK` | `INFO     nfc_gate: [<name>] PN532 reader OK` |
-| Manual init not responding | `❌ NFC[<name>]: reader not responding` | `ERROR    nfc_gate: [<name>] PN532 did not respond — check wiring and I2C address (default 0x24)` |
-| Manual init exception | `❌ NFC[<name>]: init failed: <error>` | `ERROR    nfc_gate: [<name>] init error: <error>` |
-| Delayed startup init failed | `❌ NFC[<name>]: reader not ready — check wiring. Run <init command> after fixing.` | `ERROR    nfc_gate: [<name>] PN532 did not respond — check wiring and I2C address (default 0x24)` or `ERROR    nfc_gate: [<name>] init error: <error>` |
+| Manual init not responding | `💥 NFC[<name>]: reader not responding` | `ERROR    nfc_gate: [<name>] PN532 did not respond — check wiring and I2C address (default 0x24)` |
+| Manual init exception | `💥 NFC[<name>]: init failed: <error>` | `ERROR    nfc_gate: [<name>] init error: <error>` |
+| Delayed startup init failed | `💥 NFC[<name>]: reader not ready — check wiring. Run <init command> after fixing.` | `ERROR    nfc_gate: [<name>] PN532 did not respond — check wiring and I2C address (default 0x24)` or `ERROR    nfc_gate: [<name>] init error: <error>` |
 | Manual raw scan, no tag | `NFC[<name>]: no tag detected` | Console command output only |
 | Manual raw scan, tag found | `NFC[<name>]: UID=<uid> Tg=<target> SENS_RES=0x<value> SAK=0x<value> UIDLen=<n>` | Console command output only |
 | Manual polling start | `NFC[<name>]: polling started` | Per-lane: console command output only. Shared: see shared table. |
@@ -54,7 +54,7 @@ commands and scan-jog.
 |---|---|---|
 | Startup ready with HH seed | `✅ NFC[laneN]: reader ready.  HH seed: spool_id=<spool>  Startup polling is enabled; first poll in <delay>s.` | `INFO     nfc_gate: [laneN] PN532 reader OK` plus HH seed info |
 | Startup ready, HH reports empty | `✅ NFC[laneN]: reader ready.  HH reports gate empty  Run NFC GATE=<n> READ=1 to start polling.` | `INFO     nfc_gate: [laneN] PN532 reader OK` plus HH seed/empty info |
-| Manual polling while reader failed | `❌ NFC[laneN]: reader failed; run INIT=1 first` | `ERROR    nfc_gate: [laneN] gate <n> READ=1 refused — reader failed; run INIT=1 first` |
+| Manual polling while reader failed | `💥 NFC[laneN]: reader failed; run INIT=1 first` | `ERROR    nfc_gate: [laneN] gate <n> READ=1 refused — reader failed; run INIT=1 first` |
 | Clear spool cache | `NFC[laneN]: cleared cached spool_id for gate <n>; no NFC_Manager event was dispatched. Next tag read will resolve Spoolman again.` | `INFO     nfc_gate: [laneN] gate <n> — spool cache cleared (uid=<uid> old_spool=<spool>); next read will resolve Spoolman again` |
 | Apply with no cached spool | `NFC[laneN]: no cached spool_id to apply; run POLL=1 first` | Console command output only |
 | Apply cached spool | `NFC[laneN]: dispatched cached spool_id=<spool> for gate <n> to Happy Hare` | `INFO     nfc_gate: [laneN] gate <n> — manual apply spool=<spool> uid=<uid>` |
@@ -78,7 +78,7 @@ JOG_SCAN=1` or by the automatic scan-jog trigger.
 
 | Case | Console message | `nfc_reader.log` |
 |---|---|---|
-| Reader failed | `❌ NFC[laneN]: reader failed — run NFC GATE=<n> INIT=1 first` | `ERROR    ❌ NFC[laneN]: reader failed — run NFC GATE=<n> INIT=1 first` |
+| Reader failed | `💥 NFC[laneN]: reader failed — run NFC GATE=<n> INIT=1 first` | `ERROR    💥 NFC[laneN]: reader failed — run NFC GATE=<n> INIT=1 first` |
 | Print active | `⛔ NFC[laneN]: print is active — cannot start scan-jog while printing` | `WARNING  ⛔ NFC[laneN]: print is active — cannot start scan-jog while printing` |
 | Happy Hare busy | `⛔ NFC[laneN]: Happy Hare is busy (action=<action>) — wait for idle before starting scan-jog` | `WARNING  ⛔ NFC[laneN]: Happy Hare is busy (action=<action>) — wait for idle before starting scan-jog` |
 | Another gate scanning | `⛔ NFC[laneN]: gate <n> is already scanning — only one gate may scan at a time` | `WARNING  ⛔ NFC[laneN]: gate <n> is already scanning — only one gate may scan at a time` |
@@ -86,7 +86,7 @@ JOG_SCAN=1` or by the automatic scan-jog trigger.
 | Preflight failed | `⛔ NFC[laneN]: scan-jog not available while <reason>` | `WARNING  ⛔ NFC[laneN]: scan-jog not available while <reason>` |
 | Scan-jog started | `🔍 NFC[laneN]: scan-jog started for gate <n> (max=<mm>mm  poll=<seconds>s)` | `INFO     nfc_gate: [laneN] gate <n> scan mode started — chunk=<mm>mm max=<mm>mm speed=<mm/s> chunk_interval=<seconds>s dwell=<seconds>s poll=<seconds>s` at `debug: 3` |
 | Move step queued | `NFC[<n>]: moving <mm>mm  scan position <mm> / <mm>mm` | `INFO     NFC[<n>]: moving <mm>mm  scan position <mm> / <mm>mm` and `INFO     NFC[<n>]: move queued <mm>mm  scan position <mm> / <mm>mm` |
-| Scan poll failed | `❌ NFC[<n>]: scan poll failed` | `ERROR    ❌ NFC[<n>]: scan poll failed` |
+| Scan poll failed | `💥 NFC[<n>]: scan poll failed` | `ERROR    💥 NFC[<n>]: scan poll failed` |
 | Tag found | `😊 NFC[<n>]: tag found` | `INFO     😊 NFC[<n>]: tag found` and mirrored to `klippy.log` |
 | Rewinding after tag found | `⏪ NFC[<n>]: rewinding <mm>mm` | `INFO     ⏪ NFC[<n>]: rewinding <mm>mm` |
 | Spool assigned | `✅ NFC[<n>]: spool <spool> assigned` | `INFO     ✅ NFC[<n>]: spool <spool> assigned` and mirrored to `klippy.log` |
@@ -104,7 +104,7 @@ Shared reader messages are specific to `[nfc_gate shared]` and `NFC_SHARED`.
 | Startup ready with polling | `✅ NFC[shared]: shared reader ready.  Startup polling is enabled; first poll in <delay>s.` | `INFO     nfc_gate: [shared] PN532 reader OK` and `INFO     nfc_gate: [shared] startup polling enabled; first poll in <delay>s` |
 | Startup ready, manual polling needed | `✅ NFC[shared]: shared reader ready.  Run NFC_SHARED READ=1 to start polling.` | `INFO     nfc_gate: [shared] PN532 reader OK` |
 | Startup polling resumed after manual init | `NFC[shared]: startup polling resumed` | `INFO     nfc_gate: [shared] startup polling enabled; first poll in <delay>s` |
-| `READ=1` while reader failed | `❌ NFC[shared]: reader failed; run INIT=1 first` | `ERROR    nfc_gate: [shared] shared READ=1 refused — reader failed; run INIT=1 first` |
+| `READ=1` while reader failed | `💥 NFC[shared]: reader failed; run INIT=1 first` | `ERROR    nfc_gate: [shared] shared READ=1 refused — reader failed; run INIT=1 first` |
 | `READ=1` while printing | `⚠️ NFC[shared]: shared polling not started while printing` | `WARNING  nfc_gate: [shared] shared READ=1 refused — printing` |
 | `READ=1` while spool pending | `⚠️ NFC[shared]: spool <spool> is already pending; use NFC_SHARED REPLACE=1 to discard it and scan another, or NFC_SHARED CANCEL=1 to cancel` | `WARNING  nfc_gate: [shared] shared READ=1 refused — spool <spool> already pending` |
 | `READ=1` starts polling | `NFC[shared]: polling started` | `INFO     nfc_gate: [shared] shared READ=1 — polling started with <seconds>s read timeout` |
@@ -124,11 +124,11 @@ Shared reader messages are specific to `[nfc_gate shared]` and `NFC_SHARED`.
 | `PRELOAD_CHECK` no staged spool | `⛔ NFC[shared]: no spool staged — tap your spool tag on the shared reader first, or use MMU_PRELOAD to load without spool assignment` | `INFO     nfc_gate: [shared] PRELOAD_CHECK — no pending spool; advising manual preload` |
 | `force_spool_id` blocks load | `⛔ NFC[shared]: force_spool_id is set — tap your spool tag on the shared reader before loading, or disable force_spool_id to allow untagged loads` | Same message is raised as a G-code error; no separate logger line currently |
 | Spool already assigned | `⚠️ NFC[shared]: spool <spool> is already assigned to a gate — possible duplicate load or stale assignment; no NEXT_SPOOLID staged` | `WARNING  nfc_gate: [shared] PRELOAD_CHECK — spool <spool> already assigned to a gate; possible duplicate load or stale assignment; skipping NEXT_SPOOLID` |
-| Spoolman refresh failed | `❌ NFC[shared]: MMU_SPOOLMAN REFRESH failed; pending spool <spool> kept. Fix HH/Spoolman, then run NFC_SHARED PRELOAD_CHECK=1 again` | `ERROR    nfc_gate: [shared] PRELOAD_CHECK — MMU_SPOOLMAN REFRESH failed for auto-created spool <spool>: <error>` |
-| Gate map failed | `❌ NFC[shared]: MMU_GATE_MAP failed; pending spool <spool> kept. Fix Happy Hare, then run NFC_SHARED PRELOAD_CHECK=1 again` | `ERROR    nfc_gate: [shared] PRELOAD_CHECK — MMU_GATE_MAP failed: <error>` |
+| Spoolman refresh failed | `💥 NFC[shared]: MMU_SPOOLMAN REFRESH failed; pending spool <spool> kept. Fix HH/Spoolman, then run NFC_SHARED PRELOAD_CHECK=1 again` | `ERROR    nfc_gate: [shared] PRELOAD_CHECK — MMU_SPOOLMAN REFRESH failed for auto-created spool <spool>: <error>` |
+| Gate map failed | `💥 NFC[shared]: MMU_GATE_MAP failed; pending spool <spool> kept. Fix Happy Hare, then run NFC_SHARED PRELOAD_CHECK=1 again` | `ERROR    nfc_gate: [shared] PRELOAD_CHECK — MMU_GATE_MAP failed: <error>` |
 | Spool staged successfully | `✅ NFC[shared]: spool <spool> staged — sending to Happy Hare` | `INFO     nfc_gate: [shared] PRELOAD_CHECK complete — spool <spool> staged via NEXT_SPOOLID, pending cleared, polling restarted` |
 | Auto-created spool staged | `✅ NFC[shared]: spool <spool> staged [new spool synced] — sending to Happy Hare` | Same as above, plus refresh detail around `MMU_SPOOLMAN REFRESH` depending on debug level |
-| `REPLACE=1` while reader failed | `❌ NFC[shared]: reader failed; run INIT=1 first` | `ERROR    nfc_gate: [shared] shared REPLACE=1 refused — reader failed; run INIT=1 first` |
+| `REPLACE=1` while reader failed | `💥 NFC[shared]: reader failed; run INIT=1 first` | `ERROR    nfc_gate: [shared] shared REPLACE=1 refused — reader failed; run INIT=1 first` |
 | `REPLACE=1` while printing | `⚠️ NFC[shared]: shared polling not started while printing` | `WARNING  nfc_gate: [shared] shared REPLACE=1 refused — printing` |
 | `REPLACE=1` with pending spool | `NFC[shared]: discarded pending spool <spool>; polling restarted` | `INFO     nfc_gate: [shared] shared REPLACE=1 — discarded spool=<spool>; polling restarted with <seconds>s read timeout` |
 | `REPLACE=1` with no pending spool | `NFC[shared]: no pending spool to replace; polling started` | `INFO     nfc_gate: [shared] shared REPLACE=1 — discarded spool=None; polling restarted with <seconds>s read timeout` |
