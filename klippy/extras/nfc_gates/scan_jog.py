@@ -5,6 +5,9 @@
 from .log import info_both, logger
 
 
+DECODE_RETRY_SETTLE_DELAY = 1.0
+
+
 def manual_jog_scan(gate, gcmd):
     """Start scan-and-jog on demand, matching the automatic trigger path."""
     if gate._failed:
@@ -229,6 +232,15 @@ def step_event(gate, eventtime):
     now = gate.reactor.monotonic()
 
     retry_poll = decode_retry_in_progress(gate)
+    if retry_poll and now < gate._scan_next_chunk_time:
+        if gate._debug >= 3:
+            logger.info(
+                "nfc_gate: [%s] gate %d decode retry waiting %.2fs "
+                "before polling at scan position %.1f / %.1fmm",
+                gate._name, gate._gate,
+                gate._scan_next_chunk_time - now,
+                gate._scan_mm_total, gate._scan_max_mm)
+        return gate._scan_next_chunk_time
     if retry_poll:
         log_decode_retry_poll_start(gate)
 
@@ -405,8 +417,7 @@ def queue_decode_retry_move(gate, now, uid, reason, max_attempts, retry_mm):
     gate._run_jog(move)
     gate._scan_mm_total += move
     gate._scan_decode_retry_offset += move
-    gate._scan_next_chunk_time = (
-        now + chunk_interval(gate, move) + chunk_dwell(gate))
+    gate._scan_next_chunk_time = gate.reactor.monotonic() + DECODE_RETRY_SETTLE_DELAY
     logger.info(
         "NFC[%d]: decode retry move queued %.1fmm  scan position %.1f / %.1fmm",
         gate._gate, move, gate._scan_mm_total, gate._scan_max_mm)
@@ -476,8 +487,7 @@ def retry_incomplete_decode(gate, now):
     gate._run_jog(move)
     gate._scan_mm_total += move
     gate._scan_decode_retry_offset += move
-    gate._scan_next_chunk_time = (
-        now + chunk_interval(gate, move) + chunk_dwell(gate))
+    gate._scan_next_chunk_time = gate.reactor.monotonic() + DECODE_RETRY_SETTLE_DELAY
     logger.info(
         "NFC[%d]: decode retry move queued %.1fmm  scan position %.1f / %.1fmm",
         gate._gate, move, gate._scan_mm_total, gate._scan_max_mm)

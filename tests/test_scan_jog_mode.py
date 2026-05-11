@@ -739,7 +739,7 @@ def test_scan_step_second_decode_retry_checks_other_side():
     assert not finished
     assert result == pytest_approx(100.5)
     assert g._scan_mm_total == 95.0
-    assert g._scan_next_chunk_time == pytest_approx(101.6)
+    assert g._scan_next_chunk_time == pytest_approx(101.0)
     assert g._scan_decode_retry_attempts == 2
     assert g._scan_decode_retry_offset == -5.0
     assert any('MMU_TEST_MOVE MOVE=-10.00' in script
@@ -771,6 +771,32 @@ def test_scan_step_continues_decode_retry_without_regular_jog():
     assert any('MMU_TEST_MOVE MOVE=-10.00' in script
                for script in g.printer.gcode_scripts)
     assert not any('MMU_TEST_MOVE MOVE=20.00' in script
+                   for script in g.printer.gcode_scripts)
+
+
+def test_scan_step_waits_for_decode_retry_settle_before_polling():
+    g = _make_gate(scan_jog_mm=20.0, scan_max_mm=200.0,
+                   scan_decode_retry_mm=5.0,
+                   scan_decode_retry_rounds=3)
+    g._scan_mode = True
+    g._scan_mm_total = 105.0
+    g._scan_next_chunk_time = 101.0
+    g._scan_decode_retry_uid = '04AABB'
+    g._scan_decode_retry_attempts = 1
+    g._scan_decode_retry_offset = 5.0
+    g._scan_found_event = ('uid_only', 0, '04AABB', None, None)
+    g.printer.set_print_state('standby')
+    g.printer.set_mmu(MockMMU(gear_short_move_speed=100.0))
+    polled = []
+    g._poll = lambda: polled.append(True) or False
+
+    result = g._scan_step_event(100.0)
+
+    assert result == pytest_approx(101.0)
+    assert not polled
+    assert g._scan_mm_total == 105.0
+    assert g._scan_decode_retry_attempts == 1
+    assert not any('MMU_TEST_MOVE' in script
                    for script in g.printer.gcode_scripts)
 
 
@@ -849,7 +875,7 @@ def test_scan_decode_retry_clamps_to_scan_bounds():
 
     assert result == pytest_approx(100.5)
     assert g._scan_mm_total == 200.0
-    assert g._scan_next_chunk_time == pytest_approx(101.51)
+    assert g._scan_next_chunk_time == pytest_approx(101.0)
     assert g._scan_decode_retry_attempts == 1
     assert g._scan_decode_retry_offset == 1.0
     assert any('MMU_TEST_MOVE MOVE=1.00' in script
