@@ -243,6 +243,12 @@ def step_event(gate, eventtime):
         gate._finish_scan()
         return gate.reactor.NEVER
 
+    if decode_retry_in_progress(gate):
+        if continue_decode_retry(gate, now):
+            return gate.reactor.monotonic() + gate._scan_poll_interval
+        gate._finish_scan()
+        return gate.reactor.NEVER
+
     if gate._scan_mm_total >= gate._scan_max_mm:
         logger.warning(
             "nfc_gate: [%s] scan mode: no tag after %.1fmm — rewinding",
@@ -289,10 +295,65 @@ def reset_uid_only_read(gate, uid):
         gate._state.current_uid = None
         gate._state.current_spool = None
         gate._state.miss_count = 0
-    if gate._scan_found_event is not None:
-        event = gate._scan_found_event
-        if len(event) >= 3 and event[2] == uid:
-            gate._scan_found_event = None
+
+
+def decode_retry_config(gate):
+    max_rounds = max(0, int(getattr(gate, '_scan_decode_retry_rounds', 3)))
+    max_attempts = max_rounds * 2
+    retry_mm = max(0.0, float(getattr(gate, '_scan_decode_retry_mm', 5.0)))
+    return max_attempts, retry_mm
+
+
+def decode_retry_in_progress(gate):
+    max_attempts, retry_mm = decode_retry_config(gate)
+    return (
+        max_attempts > 0 and retry_mm > 0.0
+        and gate._scan_decode_retry_uid is not None
+        and gate._scan_decode_retry_attempts > 0)
+
+
+def next_decode_retry_move(gate, max_attempts, retry_mm):
+    move = 0.0
+    while gate._scan_decode_retry_attempts < max_attempts:
+        attempt_index = gate._scan_decode_retry_attempts
+        round_index = attempt_index // 2
+        side = 1.0 if attempt_index % 2 == 0 else -1.0
+        target_offset = side * retry_mm * (round_index + 1)
+        current_offset = getattr(gate, '_scan_decode_retry_offset', 0.0)
+        move = target_offset - current_offset
+        next_total = gate._scan_mm_total + move
+        if next_total < 0.0:
+            move = -gate._scan_mm_total
+        elif next_total > gate._scan_max_mm:
+            move = gate._scan_max_mm - gate._scan_mm_total
+        gate._scan_decode_retry_attempts += 1
+        if abs(move) > 0.001:
+            return move
+        gate._scan_decode_retry_offset += move
+        move = 0.0
+    return 0.0
+
+
+def queue_decode_retry_move(gate, now, uid, reason, max_attempts, retry_mm):
+    move = next_decode_retry_move(gate, max_attempts, retry_mm)
+    if abs(move) <= 0.001:
+        return False
+
+    attempt = gate._scan_decode_retry_attempts
+    msg = ("NFC[%d]: tag decode incomplete; retry %d/%d after %.1fmm jog"
+           % (gate._gate, attempt, max_attempts, move))
+    logger.warning("%s (uid=%s reason=%s)", msg, uid, reason)
+    gate._console("鈿狅笍 " + msg)
+    reset_uid_only_read(gate, uid)
+    gate._run_jog(move)
+    gate._scan_mm_total += move
+    gate._scan_decode_retry_offset += move
+    gate._scan_next_chunk_time = (
+        now + chunk_interval(gate, move) + chunk_dwell(gate))
+    logger.info(
+        "NFC[%d]: decode retry move queued %.1fmm  scan position %.1f / %.1fmm",
+        gate._gate, move, gate._scan_mm_total, gate._scan_max_mm)
+    return True
 
 
 def retry_incomplete_decode(gate, now):
@@ -301,9 +362,7 @@ def retry_incomplete_decode(gate, now):
 
     tag = gate._state.current_tag
     uid = tag.uid
-    max_rounds = max(0, int(getattr(gate, '_scan_decode_retry_rounds', 3)))
-    max_attempts = max_rounds * 2
-    retry_mm = max(0.0, float(getattr(gate, '_scan_decode_retry_mm', 5.0)))
+    max_attempts, retry_mm = decode_retry_config(gate)
     if max_attempts <= 0 or retry_mm <= 0.0:
         return False
 
@@ -366,6 +425,19 @@ def retry_incomplete_decode(gate, now):
         "NFC[%d]: decode retry move queued %.1fmm  scan position %.1f / %.1fmm",
         gate._gate, move, gate._scan_mm_total, gate._scan_max_mm)
     return True
+
+
+def continue_decode_retry(gate, now):
+    uid = gate._scan_decode_retry_uid
+    max_attempts, retry_mm = decode_retry_config(gate)
+    if gate._scan_decode_retry_attempts >= max_attempts:
+        msg = ("NFC[%d]: tag decode still incomplete after %d retries; "
+               "using current result" % (gate._gate, max_attempts))
+        logger.warning(msg)
+        gate._console("鈿狅笍 " + msg)
+        return False
+    return queue_decode_retry_move(
+        gate, now, uid, "no tag at retry position", max_attempts, retry_mm)
 
 
 def finish(gate):

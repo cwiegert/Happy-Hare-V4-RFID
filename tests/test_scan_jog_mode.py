@@ -706,7 +706,7 @@ def test_scan_step_retries_incomplete_rich_read():
     assert g._scan_decode_retry_attempts == 1
     assert g._scan_decode_retry_uid == '04AABB'
     assert g._scan_decode_retry_offset == 5.0
-    assert g._scan_found_event is None
+    assert g._scan_found_event == ('uid_only', 0, '04AABB', None, None)
     assert g._state.current_uid is None
     assert any('MMU_TEST_MOVE MOVE=5.00' in script
                for script in g.printer.gcode_scripts)
@@ -746,6 +746,32 @@ def test_scan_step_second_decode_retry_checks_other_side():
                for script in g.printer.gcode_scripts)
     assert any('tag decode incomplete; retry 2/6 after -10.0mm jog' in msg
                for msg in g.printer._gcode.responses)
+
+def test_scan_step_continues_decode_retry_without_regular_jog():
+    g = _make_gate(scan_jog_mm=20.0, scan_max_mm=200.0,
+                   scan_decode_retry_mm=5.0,
+                   scan_decode_retry_rounds=3)
+    g._scan_mode = True
+    g._scan_mm_total = 105.0
+    g._scan_next_chunk_time = 100.0
+    g._scan_decode_retry_uid = '04AABB'
+    g._scan_decode_retry_attempts = 1
+    g._scan_decode_retry_offset = 5.0
+    g._scan_found_event = ('uid_only', 0, '04AABB', None, None)
+    g.printer.set_print_state('standby')
+    g.printer.set_mmu(MockMMU(gear_short_move_speed=100.0))
+    g._poll = lambda: False
+
+    result = g._scan_step_event(100.0)
+
+    assert result == pytest_approx(100.5)
+    assert g._scan_mm_total == 95.0
+    assert g._scan_decode_retry_attempts == 2
+    assert g._scan_decode_retry_offset == -5.0
+    assert any('MMU_TEST_MOVE MOVE=-10.00' in script
+               for script in g.printer.gcode_scripts)
+    assert not any('MMU_TEST_MOVE MOVE=20.00' in script
+                   for script in g.printer.gcode_scripts)
 
 def test_scan_step_accepts_result_after_decode_retry_limit():
     g = _make_gate(scan_decode_retry_rounds=1)
