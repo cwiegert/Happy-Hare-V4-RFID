@@ -992,7 +992,7 @@ def test_scan_step_runs_deferred_hh_prep_before_first_move():
     assert scripts[0] == '_NFC_GATE_CLEAR_CACHE GATE=2'
     assert scripts[1] == 'MMU_SPOOLMAN SYNC=1 QUIET=1'
     assert 'MMU_SELECT GATE=2' in scripts[2]
-    assert 'MMU_TEST_MOVE MOVE=10.00' in scripts[2]
+    assert 'MMU_TEST_MOVE MOVE=16.67' in scripts[2]
     assert not g._scan_hh_prep_pending
 
 def test_scan_step_issues_one_chunk_when_due():
@@ -1011,8 +1011,8 @@ def test_scan_step_issues_one_chunk_when_due():
     scripts = g.printer.gcode_scripts
     assert len(scripts) == 1
     assert 'MMU_SELECT GATE=1' in scripts[0]
-    assert 'MMU_TEST_MOVE MOVE=10.00' in scripts[0]
-    assert g._scan_mm_total == 10.0
+    assert 'MMU_TEST_MOVE MOVE=16.67' in scripts[0]
+    assert g._scan_mm_total == pytest_approx(50.0 / 3.0)
     assert g._scan_next_chunk_time == pytest_approx(100.5)
     assert result == pytest_approx(100.5)
 
@@ -1045,8 +1045,8 @@ def test_scan_reads_per_position_before_substep_move():
     assert result == pytest_approx(101.5)
     assert g._scan_position_reads_done == 0
     assert len(polls) == 3
-    assert g._scan_mm_total == 10.0
-    assert any('MMU_TEST_MOVE MOVE=10.00' in script
+    assert g._scan_mm_total == pytest_approx(50.0 / 3.0)
+    assert any('MMU_TEST_MOVE MOVE=16.67' in script
                for script in g.printer.gcode_scripts)
 
 
@@ -1102,8 +1102,8 @@ def test_derived_lane_max_controls_final_chunk_size():
     g._scan_step_event(100.0)
 
     assert g._scan_max_mm == 175.0
-    assert g._scan_mm_total == 160.0
-    assert any('MMU_TEST_MOVE MOVE=10.00' in script
+    assert g._scan_mm_total == pytest_approx(150.0 + (50.0 / 3.0))
+    assert any('MMU_TEST_MOVE MOVE=16.67' in script
                for script in g.printer.gcode_scripts)
 
 def test_scan_step_does_not_stack_chunks_before_interval():

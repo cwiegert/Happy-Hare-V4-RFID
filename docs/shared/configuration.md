@@ -107,7 +107,7 @@ scan_poll_interval:    0.10
 | Setting | Default | Description |
 |---|---|---|
 | `scan_enabled` | `False` | Controls the automatic Happy Hare gate-status edge trigger. `False` disables automatic 0→1 scan-jog, but manual or Happy Hare hook-triggered `NFC JOG_SCAN=1` still works. |
-| `scan_jog_mm` | `75.0` | Logical filament advance per scan chunk (mm). NFC divides this into five blocking MMU_TEST_MOVE substeps so it can read at stopped spool positions. |
+| `scan_jog_mm` | `75.0` | Logical filament advance per scan chunk (mm). NFC divides this into three blocking MMU_TEST_MOVE substeps so it can read at stopped spool positions. |
 | `scan_reads_per_position` | `3` | Number of NFC read attempts at each stopped spool position before moving the next substep. Reads are spaced by `scan_poll_interval`. |
 | `scan_rewind_buffer_mm` | `30.0` | Distance reserved for Happy Hare's final gate-parking step (`_MMU_STEP_UNLOAD_GATE`). After a tag is found, NFC fast-rewinds to within this buffer and then hands off to HH for sensor/encoder-based final parking. If the scan moved less than this value, the fast rewind is skipped. |
 | `scan_decode_retry_mm` | `2.0` | Distance between nearby retry positions after a UID is found but the rich tag payload is marked incomplete. |

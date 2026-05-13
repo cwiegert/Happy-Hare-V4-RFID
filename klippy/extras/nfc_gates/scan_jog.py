@@ -7,7 +7,7 @@ from .log import info_both, logger
 
 
 DECODE_RETRY_SETTLE_DELAY = 1.0
-SCAN_JOG_SUBSTEPS = 7
+SCAN_JOG_SUBSTEPS = 3
 
 
 def manual_jog_scan(gate, gcmd):
