@@ -177,7 +177,7 @@ before NFC calls back into Happy Hare.
 
 **Happy Hare post-preload hook setup:**
 
-The [jacksky6 JK-dev branch](https://github.com/jacksky6/Happy-Hare/tree/JK-dev) of Happy Hare adds `variable_user_post_preload_extension` in `config/base/mmu_macro_vars.cfg`. Set it to drive NFC scan-jog automatically after each `MMU_PRELOAD`:
+The [igiannakas IG-dev branch](https://github.com/igiannakas/Happy-Hare/tree/IG-dev) of Happy Hare adds `variable_user_post_preload_extension` in `config/base/mmu_macro_vars.cfg`. Set it to drive NFC scan-jog automatically after each `MMU_PRELOAD`:
 
 ```ini
 [gcode_macro _MMU_SEQUENCE_VARS]
