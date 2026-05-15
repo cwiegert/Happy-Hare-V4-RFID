@@ -127,13 +127,26 @@ Build-up logic (auto-create flow when metadata is present)
   - `spoolman_auto_create: True`
   - Tag parser returned a `meta` dict containing at minimum `material` (e.g. "PLA"). Additional helpful fields: `brand`/`vendor`, `color_hex`, `min_temp`, `max_temp`, `bed_temp`, `diameter`.
 
-- What happens during auto-create:
-  1. The tag metadata is used to create or find the matching Spoolman spool record.
-  2. If the spool did not exist, a new spool record is created automatically.
-  3. The system then writes the UID into the configured `spoolman_rfid_key` extra field on the newly-created spool record.
-  4. The new spool ID is used for the gate and Happy Hare is notified.
+- Decision/build tree:
+  1. If the tag carries an embedded `spoolman_id`, that ID is checked first.
+     - If the spool exists, it is used directly.
+     - If the spool ID is invalid, the flow continues to UID lookup and then auto-create.
+  2. If no spool ID is embedded, the system looks up the UID in `rfid_tag`.
+     - If the UID is already attached to a spool, that spool is used.
+     - If the UID is not found, auto-create begins.
+  3. During auto-create, the system determines whether a matching vendor and filament/profile already exist:
+     - If `brand`/`vendor` is present, the existing vendor is used when possible; otherwise a new vendor entry may be created.
+     - If a filament/profile matching the parsed metadata exists for that vendor, it is reused; otherwise a new filament/profile is created and the vendor is assigned on that filament.
+     - Finally, the spool record is created for that filament/profile if needed.
+  4. After the spool record exists, the UID is written into the configured `spoolman_rfid_key` extra field on that spool.
 
-- On success: the new spool ID is used and `_NFC_SPOOL_CHANGED` is fired with `SPOOL_ID=<new_id>`.
+- Practical result:
+  - Existing spool by UID → no create needed.
+  - Existing spool by embedded ID → no create needed.
+  - Missing spool but enough metadata → new spool record is created.
+  - Missing filament/profile metadata → auto-create is skipped and the read is unresolved.
+
+- On success: the new or existing spool ID is used and `_NFC_SPOOL_CHANGED` is fired with `SPOOL_ID=<new_id>`.
 - On any failure: auto-create aborts, the read is treated as unresolved, and the console/logs show the error. Inspect verbose logs to see the exact HTTP response.
 
 Notes:
