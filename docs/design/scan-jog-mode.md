@@ -259,6 +259,12 @@ left side of each lane, gate `N` can occasionally see the parked spool on gate
   left NFC gate object's cached UID
 - never compares Spoolman spool IDs or Happy Hare display metadata
 
+This UID-only rule is the current implemented behavior, not a complete identity
+model for every factory spool. Bambu AMS-style spools can carry two physical
+side tags with different NFC UIDs but the same parser-supplied
+`spool_identity` (`bambu_<tray_uid>`). In that case the current UID-only
+interference rule will not identify the two side tags as the same spool.
+
 When the match is confirmed, scan-jog selects the left gate, moves it forward
 75 mm, waits with `M400`, reselects the current gate, clears the false scan
 result, and reads again. If the same left-neighbor UID is still visible, it may

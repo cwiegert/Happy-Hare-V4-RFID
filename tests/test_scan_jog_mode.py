@@ -441,6 +441,34 @@ def test_status_line_colors_hh_available_with_html_span():
     assert '<span style="color:#90EE90">available</span>' in line
     assert 'HH: spool 55  available' in _strip_html(line)
 
+def test_status_line_metadata_direct_shows_spool_identity():
+    g = _make_gate()
+    g.printer.set_mmu(MockMMU(gate_status=[1], gate_spool_id=[-1]))
+    g._state.current_uid = '6317B1A1'
+    g._state.current_spool = DIRECT_METADATA_SPOOL
+    g._state.current_tag = CurrentTag(
+        uid='6317B1A1',
+        meta={'material': 'PLA', 'color_hex': 'FFFFFF',
+              'spool_identity': 'bambu_BB9B88'})
+    g._state.current_tag.spool_identity = 'bambu_BB9B88'
+
+    line = _strip_html(g.status_line())
+
+    assert 'metadata material=PLA color=FFFFFF spool_identity=bambu_BB9B88' in line
+
+def test_status_line_metadata_direct_shows_none_without_spool_identity():
+    g = _make_gate()
+    g.printer.set_mmu(MockMMU(gate_status=[1], gate_spool_id=[-1]))
+    g._state.current_uid = '04C19F92'
+    g._state.current_spool = DIRECT_METADATA_SPOOL
+    g._state.current_tag = CurrentTag(
+        uid='04C19F92',
+        meta={'material': 'PLA', 'color_hex': 'FF5500'})
+
+    line = _strip_html(g.status_line())
+
+    assert 'metadata material=PLA color=FF5500 spool_identity=None' in line
+
 def test_hh_found_without_spool_does_not_clear_nfc_cache():
     g = _make_gate()
     g.printer.set_mmu(MockMMU(gate_status=[1], gate_spool_id=[-1]))

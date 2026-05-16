@@ -327,6 +327,13 @@ X != Y  -> normal scan-jog behavior
 Y empty -> normal scan-jog behavior
 ```
 
+This describes the current first-pass implementation. It is deliberately
+conservative but incomplete for dual-tag factory spools where the two physical
+tags have different UIDs. Bambu spools are one observed case: both side tags
+can parse to the same `spool_identity` (`bambu_<tray_uid>`) while exposing
+different physical NFC UIDs, so the UID-only rule will not classify that read
+as left-neighbor interference.
+
 Do not resolve the read UID to a Spoolman spool ID for interference detection.
 Do not compare the read spool ID to Happy Hare's left-gate spool ID. Do not
 inspect Happy Hare display names or metadata for UID information.
