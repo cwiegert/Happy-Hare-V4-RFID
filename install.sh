@@ -726,17 +726,12 @@ if [ ! -d "${PRINTER_CONFIG}" ]; then
 fi
 
 # ── Sparse checkout — keep docs on remote only ───────────────────────────────
-# Excludes the docs/ directory from the working tree on this machine.
-# Safe to run on first install (removes already-cloned docs) and on re-runs.
-if git -C "${REPO_DIR}" config core.sparseCheckout 2>/dev/null | grep -q "true"; then
-    : # already configured — git pull will honour it automatically
-else
-    echo "Configuring sparse checkout to exclude docs/ from this machine..."
-    git -C "${REPO_DIR}" sparse-checkout init
-    git -C "${REPO_DIR}" sparse-checkout set '/*' '!/docs/' '!/Readme.md' '!/VENDORED.md' '!/NFC Mounting Bracket/' '!/PR.md' '!/README-private.md' '!/.github/'
-    echo "  [done]   docs/ removed from working tree — remote repo unchanged"
-    echo ""
-fi
+# Always re-applies the exclusion patterns so that new entries added in future
+# versions of install.sh take effect on re-runs.  sparse-checkout set is idempotent.
+git -C "${REPO_DIR}" sparse-checkout init
+git -C "${REPO_DIR}" sparse-checkout set '/*' '!/docs/' '!/Readme.md' '!/VENDORED.md' '!/NFC Mounting Bracket/' '!/PR.md' '!/README-private.md' '!/.github/'
+echo "  [ok]     sparse checkout configured — documentation excluded from this machine"
+echo ""
 
 # ── Profile color setup ───────────────────────────────────────────────────────
 if [ -n "${_CLI_PROFILE}" ]; then
