@@ -85,6 +85,8 @@ def _quote_respond_value(value):
 def color_console_tags(text):
     """Wrap console bracket tags with HTML color spans for the Klipper UI."""
     text = str(text)
+    text = re.sub(r'\bNFC(?=\[)', '<span style="color:#4FC3F7">NFC</span>', text)
+    text = re.sub(r'^NFC ', '<span style="color:#4FC3F7">NFC</span> ', text)
     text = text.replace('[WARN]',   '<span style="color:#FFFF00">[WARN]</span>')
     text = text.replace('[OK]',     '<span style="color:#90EE90">[OK]</span>')
     text = text.replace('[ERROR]',  '<span style="color:#FF6060">[ERROR]</span>')
@@ -94,36 +96,41 @@ def color_console_tags(text):
     return text
 
 
+def _nfc_console_message(message, level_marker=None):
+    message = str(message)
+    if level_marker and message.startswith(level_marker):
+        return color_console_tags(message)
+    match = re.match(r'^\[([^\]]+)\]:\s*(.*)$', message)
+    if match:
+        message = "NFC[%s]: %s" % (match.group(1), match.group(2))
+    if level_marker:
+        message = "%s %s" % (level_marker, message)
+    return color_console_tags(message)
+
+
 def _warn_console_message(message):
-    return color_console_tags("[WARN] %s" % message)
+    return _nfc_console_message(message, "[WARN]")
+
+
+def _error_console_message(message):
+    return _nfc_console_message(message, "[ERROR]")
 
 
 def _respond_prefixed(message, levelno):
-    if hasattr(_console_gcode, 'run_script'):
-        if levelno >= logging.ERROR:
-            msg = _quote_respond_value(color_console_tags(message))
-            _console_gcode.run_script(
-                'RESPOND TYPE=error PREFIX="NFC" MSG="%s"' % msg)
-        elif levelno >= logging.WARNING:
-            msg = _quote_respond_value(_warn_console_message(message))
-            _console_gcode.run_script(
-                'RESPOND TYPE=command PREFIX="NFC" MSG="%s"' % msg)
-        else:
-            msg = _quote_respond_value(color_console_tags(message))
-            _console_gcode.run_script(
-                'RESPOND PREFIX="NFC" MSG="%s"' % msg)
+    if levelno >= logging.ERROR:
+        rendered = _error_console_message(message)
+    elif levelno >= logging.WARNING:
+        rendered = _warn_console_message(message)
+    else:
+        rendered = _nfc_console_message(message)
+    if hasattr(_console_gcode, 'respond_info'):
+        _console_gcode.respond_info(rendered)
         return
     if levelno >= logging.ERROR:
         if hasattr(_console_gcode, 'respond'):
-            _console_gcode.respond("NFC: %s" % message)
+            _console_gcode.respond(rendered)
         elif hasattr(_console_gcode, 'respond_raw'):
-            _console_gcode.respond_raw("!! NFC: %s" % message)
-        else:
-            _console_gcode.respond_info("ERROR: NFC: %s" % message)
-    elif levelno >= logging.WARNING:
-        _console_gcode.respond_info(_warn_console_message("NFC: %s" % message))
-    else:
-        _console_gcode.respond_info(color_console_tags("NFC: %s" % message))
+            _console_gcode.respond_raw(rendered)
 
 
 def _respond_to_console(record):
@@ -260,6 +267,10 @@ class _DateRotatingFileHandler(logging.FileHandler):
         # Perform a startup rotation if the file already contains stale entries
         # (Klipper restarted the same day we already have a previous-day file).
         self._do_rotate_if_stale(path)
+        # Prune at every startup so archives don't accumulate when Klipper
+        # restarts before midnight (which skips the midnight-crossing _rotate
+        # path that was the only previous prune trigger).
+        _prune_old_archives(os.path.dirname(os.path.abspath(path)))
         super(_DateRotatingFileHandler, self).__init__(path, mode='a',
                                                        encoding='utf-8',
                                                        delay=False)

@@ -541,6 +541,26 @@ print('i2c1')
 PYEOF
 }
 
+detect_mmu_led_unit() {
+    local hw_cfg="$1"
+    python3 - "${hw_cfg}" <<'PYEOF'
+import sys, re
+
+try:
+    text = open(sys.argv[1], 'r').read()
+except FileNotFoundError:
+    print('unit0')
+    raise SystemExit
+
+for line in text.splitlines():
+    m = re.match(r'^\[mmu_leds\s+(\S+)\]', line.strip())
+    if m:
+        print(m.group(1))
+        raise SystemExit
+print('unit0')
+PYEOF
+}
+
 # ── I2C bus discovery helpers ────────────────────────────────────────────────
 #
 # list_i2c_buses <mcu> <config_dir>
@@ -678,17 +698,17 @@ with open(path, 'w') as f:
     f.write(f"i2c_bus:                {i2c_bus}\n")
     f.write(f"shared:                 true\n")
     f.write(f"startup_polling:        {startup_polling}\n")
-    f.write("\n")
-    f.write("# HH LED segment used for per-gate effects (exit, entry, status).\n")
-    f.write("# NFC builds the effect name as {effect}_{segment}_{gate_index},\n")
-    f.write("# e.g. mmu4 + exit → mmu_RFID_read_exit_4.\n")
-    f.write("shared_led_segment:     exit\n")
-    f.write("\n")
-    f.write("# [mmu_led_effect] to flash bright yellow 2x when a tag is read (defined in nfc_macros.cfg).\n")
+    f.write("# [mmu_led_effect] to flash bright green 3x when a tag is read (defined in nfc_macros.cfg).\n")
     f.write("shared_tag_read_effect: mmu_RFID_read\n")
     f.write("\n")
-    f.write("# [mmu_led_effect] to flash bright green 2x when the spool ID is ready.\n")
+    f.write("# [mmu_led_effect] to flash bright green continuously while a spool is staged and waiting to load.\n")
     f.write("shared_spool_ready_effect: mmu_RFID_ready\n")
+    f.write("\n")
+    f.write("# [mmu_led_effect] to flash bright green 1x when a tag is read while bypass is selected.\n")
+    f.write("shared_bypass_tag_read_effect: mmu_RFID_bypass_read\n")
+    f.write("\n")
+    f.write("# [mmu_led_effect] to flash bright green 3x when a bypass spool resolves.\n")
+    f.write("shared_bypass_spool_ready_effect: mmu_RFID_bypass_ready\n")
     f.write("\n")
     f.write("# [mmu_led_effect] to flash bright red 5x when a tag UID does not resolve.\n")
     f.write("shared_tag_unresolved_effect: mmu_RFID_unresolved\n")
@@ -893,6 +913,7 @@ else
         "3. Poll at Klipper boot so you can tap a spool at any time? (recommended)" \
         "yes"
 
+    MMU_LED_UNIT="$(detect_mmu_led_unit "${MMU_HW_CFG}")"
     DEFAULT_I2C_MCU="$(detect_shared_mcu "${NFC_READER_SHARED_CFG}")"
     prompt_with_default I2C_MCU \
         "4. Klipper MCU the shared PN532 is wired to (must match a [mcu ...] section)" \
@@ -938,15 +959,8 @@ echo "  Startup polling:   ${STARTUP_POLLING}"
 if [ "${READER_TYPE}" = "shared" ]; then
     echo "  i2c_mcu:           ${I2C_MCU}"
     echo "  i2c_bus:           ${I2C_BUS}"
-    # Compute per-gate HH effect name from MCU trailing digit (mmu0 → index 1)
-    if [[ "${I2C_MCU}" =~ ([0-9]+)$ ]]; then
-        _gate_idx="${BASH_REMATCH[1]}"
-        _gate_led_idx=$(( _gate_idx + 1 ))
-        echo "  LED effects:       ${DEFAULT}mmu_RFID_read_gates_${_gate_led_idx} / mmu_RFID_ready_gates_${_gate_led_idx} / mmu_RFID_unresolved_gates_${_gate_led_idx} / mmu_RFID_creating_gates_${_gate_led_idx}${RESET}"
-        echo "                     (gate ${_gate_idx}, via _MMU_SET_LED_EFFECT)"
-    else
-        echo "  LED effects:       ${DEFAULT}mmu_RFID_read / mmu_RFID_ready / mmu_RFID_unresolved / mmu_RFID_creating${RESET} (all gates — no digit in MCU name)"
-    fi
+    echo "  LED effects:       ${DEFAULT}${MMU_LED_UNIT}_mmu_RFID_read_exit / ${MMU_LED_UNIT}_mmu_RFID_ready_exit / ...${RESET}"
+    echo "                     (whole-chain — all gate exit LEDs flash simultaneously)"
 else
     echo "  Lane count:        ${LANE_COUNT}"
     echo "  Scan-jog:          ${SCAN_ENABLED}"
@@ -1116,7 +1130,11 @@ echo ""
 
 merge_config "${REPO_DIR}/config/nfc_reader.cfg"        "${NFC_READER_CFG}"
 merge_config "${REPO_DIR}/config/nfc_macros.cfg"         "${NFC_CONFIG_DIR}/nfc_macros.cfg"
-merge_config "${REPO_DIR}/config/nfc_reader_hw.cfg"      "${NFC_READER_HW_CFG}"
+if [ "${READER_TYPE}" != "shared" ]; then
+    merge_config "${REPO_DIR}/config/nfc_reader_hw.cfg"  "${NFC_READER_HW_CFG}"
+else
+    echo "  [skip]     nfc_reader_hw.cfg — shared reader install does not need lane sections"
+fi
 merge_config "${REPO_DIR}/config/nfc_reader_shared.cfg"  "${NFC_READER_SHARED_CFG}"
 
 echo ""
@@ -1133,7 +1151,10 @@ set_config_value "${NFC_READER_CFG}" "nfc_gate" "spoolman_auto_create" \
 
 if [ "${READER_TYPE}" = "shared" ]; then
     # startup_polling and scan_enabled live in [nfc_gate shared], not [nfc_gate]
-    write_shared_config "${NFC_READER_SHARED_CFG}" "${I2C_MCU}" "${I2C_BUS}" \
+    set_config_value "${NFC_READER_SHARED_CFG}" "nfc_gate shared" "i2c_mcu" "${I2C_MCU}"
+    set_config_value "${NFC_READER_SHARED_CFG}" "nfc_gate shared" "i2c_bus" "${I2C_BUS}"
+    set_config_value "${NFC_READER_SHARED_CFG}" "nfc_gate shared" "shared" "true"
+    set_config_value "${NFC_READER_SHARED_CFG}" "nfc_gate shared" "startup_polling" \
         "$( [ "${STARTUP_POLLING}" = "yes" ] && echo "1" || echo "0" )"
 else
     set_config_value "${NFC_READER_CFG}" "nfc_gate" "startup_polling" \

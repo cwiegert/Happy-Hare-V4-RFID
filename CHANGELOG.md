@@ -12,13 +12,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `MMU_GATE_MAP NEXT_SPOOLID` is now staged in Python immediately when the NFC tag resolves to a spool, rather than inside the `_NFC_SHARED_PRELOAD` GCode macro. Previously the macro ran AFTER Happy Hare had already finalized the gate map entry for the loaded gate, so the spool ID was never applied to the active gate and it displayed `Id: n/a`.
 - For auto-created spools, `MMU_SPOOLMAN REFRESH=1` is also dispatched at resolution time (before `NEXT_SPOOLID`) so Happy Hare knows about the new spool before the hint is staged.
 - Removed the now-redundant `MMU_GATE_MAP NEXT_SPOOLID` and `MMU_SPOOLMAN REFRESH` lines from `_NFC_SHARED_PRELOAD`; the macro now only handles validation (`PRELOAD_CHECK`) and commit (`PRELOAD_COMMIT`).
-- If Happy Hare already shows the staged shared-reader spool assigned to a loaded gate, `_NFC_SHARED_PRELOAD` now treats that as success and commits the pending NFC read without clearing the Happy Hare gate map. This fixes same-lane eject/read/reinsert flows where the spool briefly loaded and then the gate was reset to `Empty` / `Id: n/a`.
+- If Happy Hare already shows the staged shared-reader spool assigned to a loaded gate, `_NFC_SHARED_PRELOAD` now treats that as success and commits the pending NFC read without clearing the Happy Hare gate map. This fixes same-lane eject/read/reinsert flows where the spool briefly loaded and then gate 4 was reset to `Empty` / `Id: n/a`.
 - When no spool is pending at preload time (either nothing was tapped or the UID was unresolved), `_NFC_SHARED_PRELOAD` now clears the target gate's map to `SPOOLID=-1 COLOR=FFFFFF55` before firing the `force_spool_id` advisory. Previously the gate retained the previous spool's color and ID so the EMU showed the wrong spool instead of the shadowed unknown state.
 
 ### LED Effects
 
 - `mmu_RFID_read` changed from 3 flashes to 1 flash on tag scan, differentiating it clearly from `mmu_RFID_bypass_ready` (3 flashes = bypass spool confirmed).
-- Shared reader events now flash **all MMU gate exit LEDs simultaneously** using `define_on: gates, exit`. Happy Hare creates a whole-chain effect (`unit0_mmu_RFID_read_exit`) that targets every exit LED at once; the shared reader uses this instead of a single per-gate effect.
 - Bypass-ready/shared-ready LED effects are now scheduled to stop after 4 seconds when used for immediate bypass spool confirmation, so the confirmation flash does not run indefinitely.
 - The shared-reader 80% pending-timeout warning now defaults to `mmu_RFID_warning`, switches from the ready LED to the warning LED at the warning point, and re-arms itself for the actual timeout so expiry cleanup cannot be missed.
 - When a shared-reader pending spool expires, NFC now stops the warning LED, issues `MMU_GATE_MAP QUIET=1` to restore Happy Hare steady-state LEDs, and restarts shared polling so another spool can be scanned immediately.
@@ -48,21 +47,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Replaced raw CSS hex colors in `_NFC_SPOOL_CHANGED` console messages with named colors so Klipper's config/template parser does not treat `#` as a comment marker and halt during startup.
 - Unknown/no-spool NFC metadata now uses `COLOR=FFFFFF55` consistently, matching the scan-unresolved placeholder color.
 - Shared-reader preload transaction warnings now use the standard NFC console color tags instead of raising Klipper command errors, avoiding red `!! Error running _NFC_SHARED_PRELOAD` wrappers for nonfatal bridge warnings.
-
-### Console Output and Logging Consistency
-
-- All log message prefixes standardized to `NFC[name]: ` across every module (`nfc_manager.py`, `shared_preload.py`, `tag_handler.py`, `scan_jog.py`). Previously the format varied between `nfc_gate: [name] `, `nfc_gate: `, and bare messages.
-- Switched console dispatch from `RESPOND PREFIX="NFC" MSG="..."` to `RESPOND TYPE=command MSG="..."`. The `PREFIX` form prepended `//` to every message in Fluidd/Mainsail; `TYPE=command` delivers the message body without any Klipper-added prefix, so `[OK]`, `[WARN]`, and `[ERROR]` color tags render cleanly.
-- `shared_preload.py` fully converted from `gcmd.respond_info()` to `logger.info/warning/error()`. All `PRELOAD_CHECK`, `PRELOAD_COMMIT`, and `PRELOAD_CLEAR_ASSIGNED` feedback now routes through the shared logger so the three output destinations (nfc_reader.log, klippy.log forwarding, and Klipper console) are always in sync.
+- NFC logger console output now avoids Klipper `RESPOND TYPE=error` / `TYPE=command` coloring and uses the NFC HTML tag colors for `[OK]`, `[WARN]`, and `[ERROR]` consistently.
 
 ### Log Rotation and Pruning
 
 - Fixed archive accumulation: `_prune_old_archives` now runs at every Klipper startup, not only when the midnight-crossing `_rotate` path fires. Previously, Klipper restarts before midnight would rename the old log file but never prune, so archives built up indefinitely.
 - Retention remains 7 days / 7 archives; the bug was the pruning never ran, not the threshold.
 
-### Sync Workflow
+### Console Output and Logging Consistency
 
-- Updated `sync-public.yml` to exclude all older NFC gate hanger files from the public repo sync. Only `LED_holder_with_NFC_Bambu_height v3.step` is now published; `LED_holder_NFC_Guard_Bambu_height.*`, `LED_holder_with_NFC_Bambu_height.stl/.step`, `LED_holder_NFC_Guard.*`, and `LED_holder_No_cover_with_NFC.*` are excluded from rsync and explicitly removed via `rm -f` so stale copies are cleaned up in the public repo.
+- All log message prefixes standardized to `NFC[name]: ` across every module (`nfc_manager.py`, `shared_preload.py`, `tag_handler.py`, `scan_jog.py`). Previously the format varied between `nfc_gate: [name] `, `nfc_gate: `, and bare messages — making it hard to filter logs for a specific gate.
+- Switched logger console dispatch away from generated `RESPOND` scripts and onto direct `gcode.respond_info()` calls. This prevents Fluidd/Mainsail from showing `echo:` or Klipper-added prefixes on NFC status lines, while still allowing the NFC logger to color `[OK]`, `[WARN]`, and `[ERROR]` consistently.
+- Shared-reader pending warnings and timeout messages now use the same themed prefix format as the rest of the console output: `[WARN] NFC[shared]: ...` and `[ERROR] NFC[shared]: ...`. This fixes the old `NFC [WARN] [shared]` ordering and removes leftover white `[shared]` lane styling.
+- Scan-jog and per-lane command replies now use the same themed `NFC[lane]: ...` console prefix, including READ/POLL replies and rewind messages. Logger console output also normalizes older internal `[lane]: ...` messages before they reach the UI.
+- `shared_preload.py` fully converted from `gcmd.respond_info()` to `logger.info/warning/error()`. All `PRELOAD_CHECK`, `PRELOAD_COMMIT`, and `PRELOAD_CLEAR_ASSIGNED` feedback now routes through the shared logger so the three output destinations (nfc_reader.log, klippy.log forwarding, and Klipper console) are always in sync.
 
 ### Tests
 
@@ -70,7 +68,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Added regression coverage for shared-reader bypass detection and immediate active-spool assignment.
 - Added installer checks to keep `shared_led_segment` out of generated shared config and prevent shared-only installs from merging lane hardware sections.
 - Added a macro config guard so `action_respond_info` lines do not use raw CSS hex color literals.
-- Added LED flash-count assertions for `mmu_RFID_read` (1 flash) and `mmu_RFID_ready` (continuous).
+- Added logger regression coverage for direct console dispatch, NFC-themed warning ordering, green `[OK]`, yellow `[WARN]`, red `[ERROR]`, and removal of the old white lane-name styling.
+- Added regression coverage for scan-jog rewind and per-lane READ/POLL console prefixes.
 
 ---
 
@@ -87,6 +86,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### LED Behavior
 
+- Shared reader events now flash **all MMU gate exit LEDs simultaneously** instead of a single per-gate LED. All five `mmu_RFID_*` effects now use `define_on: gates, exit`, which creates both per-gate effects (used by per-lane readers) and a whole-chain effect that targets every gate at once (used by the shared reader).
 - Fixed indefinitely looping unresolved-tag strobe — it now plays a fixed number of flashes and stops cleanly.
 - `mmu_RFID_ready` (green strobe) now persists continuously while a spool is staged and waiting to load; previously it blinked twice and stopped.
 - Added `mmu_RFID_warning` amber strobe: plays when the pending timeout is 80% elapsed, giving the user a visible countdown before the spool is dropped.

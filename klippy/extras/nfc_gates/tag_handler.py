@@ -240,7 +240,7 @@ def release_reader_target(gate, reason):
         except Exception as e:
             if gate._debug >= 4:
                 logger.debug(
-                    "nfc_gate: [%s] gate %d — target release failed "
+                    "[%s]: gate %d — target release failed "
                     "(%s): %s", gate._name, gate._gate, reason, e)
 
 
@@ -252,7 +252,7 @@ def resolve_spool_by_uid_before_metadata(gate, tag):
     uid_hex = tag.uid
     if gate._debug >= 3:
         logger.info(
-            "nfc_gate: [%s] gate %d — uid=%s  early UID lookup: checking "
+            "[%s]: gate %d — uid=%s  early UID lookup: checking "
             "Spoolman extra field %s before structured tag read",
             gate._name, gate._gate, uid_hex, gate._spoolman._rfid_key)
     try:
@@ -261,7 +261,7 @@ def resolve_spool_by_uid_before_metadata(gate, tag):
         tag.resolution = {'path': 'early_uid_lookup_failed',
                           'error': str(e)}
         logger.warning(
-            "nfc_gate: [%s] gate %d — uid=%s  early UID lookup failed: %s; "
+            "[%s]: gate %d — uid=%s  early UID lookup failed: %s; "
             "continuing structured tag read",
             gate._name, gate._gate, uid_hex, e)
         return None
@@ -269,7 +269,7 @@ def resolve_spool_by_uid_before_metadata(gate, tag):
         tag.resolution = {'path': 'early_uid_lookup_miss'}
         if gate._debug >= 3:
             logger.info(
-                "nfc_gate: [%s] gate %d — uid=%s  early UID lookup found no "
+                "[%s]: gate %d — uid=%s  early UID lookup found no "
                 "Spoolman spool; continuing structured tag read",
                 gate._name, gate._gate, uid_hex)
         return None
@@ -277,7 +277,7 @@ def resolve_spool_by_uid_before_metadata(gate, tag):
         spool_id = int(spool_id)
     except (TypeError, ValueError):
         logger.warning(
-            "nfc_gate: [%s] gate %d — uid=%s  early UID lookup returned "
+            "[%s]: gate %d — uid=%s  early UID lookup returned "
             "invalid spool_id=%r; continuing structured tag read",
             gate._name, gate._gate, uid_hex, spool_id)
         return None
@@ -286,7 +286,7 @@ def resolve_spool_by_uid_before_metadata(gate, tag):
     release_reader_target(gate, "early_uid_lookup")
     if gate._debug >= 3:
         logger.info(
-            "nfc_gate: [%s] gate %d — uid=%s  early UID lookup resolved "
+            "[%s]: gate %d — uid=%s  early UID lookup resolved "
             "Spoolman spool_id=%s; skipping structured tag read",
             gate._name, gate._gate, uid_hex, spool_id)
     return spool_id
@@ -298,7 +298,7 @@ def parse_current_tag(gate, tag):
         tag.meta = {'uid': uid_hex}
         if gate._debug >= 3:
             logger.info(
-                "nfc_gate: [%s] gate %d — uid=%s  parse_tag skipped: no raw tag data",
+                "[%s]: gate %d — uid=%s  parse_tag skipped: no raw tag data",
                 gate._name, gate._gate, uid_hex)
         return
     try:
@@ -308,14 +308,14 @@ def parse_current_tag(gate, tag):
                else tag.raw_tag_data)
         if gate._debug >= 3:
             logger.info(
-                "nfc_gate: [%s] gate %d — uid=%s  parse_tag begin raw=%s",
+                "[%s]: gate %d — uid=%s  parse_tag begin raw=%s",
                 gate._name, gate._gate, uid_hex, _raw_tag_summary(raw))
         if gate._debug >= 4:
             logger.debug(
-                "nfc_gate: [%s] gate %d — uid=%s  raw tag preview: %s",
+                "[%s]: gate %d — uid=%s  raw tag preview: %s",
                 gate._name, gate._gate, uid_hex, _raw_tag_preview(raw))
             logger.debug(
-                "nfc_gate: [%s] gate %d — uid=%s  parse_tag attempt order: %s",
+                "[%s]: gate %d — uid=%s  parse_tag attempt order: %s",
                 gate._name, gate._gate, uid_hex, _parse_attempt_summary(raw))
         if _accepts_kwarg(parse_tag, 'trace'):
             info = parse_tag(
@@ -323,7 +323,7 @@ def parse_current_tag(gate, tag):
                 uid_hex=uid_hex,
                 trace=_trace_for_gate(
                     gate,
-                    "nfc_gate: [%s] gate %d — uid=%s  rfid_tag_parser: " %
+                    "[%s]: gate %d — uid=%s  rfid_tag_parser: " %
                     (gate._name, gate._gate, uid_hex)))
         else:
             info = parse_tag(raw, uid_hex=uid_hex)
@@ -336,21 +336,21 @@ def parse_current_tag(gate, tag):
             tag.parse_error = None
             if gate._debug >= 3:
                 logger.info(
-                    "nfc_gate: [%s] gate %d — uid=%s  parse_tag result: unrecognised format",
+                    "[%s]: gate %d — uid=%s  parse_tag result: unrecognised format",
                     gate._name, gate._gate, uid_hex)
         else:
             tag.meta = info
             tag.spool_identity = _spool_identity_from_meta(info)
             tag.parse_error = info.get('parse_error') or info.get('error')
         if gate._debug >= 3:
-            logger.info("nfc_gate: [%s] gate %d — uid=%s  parsed tag meta: %s",
+            logger.info("[%s]: gate %d — uid=%s  parsed tag meta: %s",
                         gate._name, gate._gate, uid_hex, _summarize_meta(tag.meta))
         if gate._debug >= 4:
-            logger.debug("nfc_gate: [%s] gate %d — uid=%s  full meta: %s",
+            logger.debug("[%s]: gate %d — uid=%s  full meta: %s",
                          gate._name, gate._gate, uid_hex, tag.meta)
     except Exception as e:
         tag.parse_error = 'parse failed: {}'.format(e)
-        logger.error("nfc_gate: [%s] gate %d — uid=%s  parse_tag raised: %s",
+        logger.error("[%s]: gate %d — uid=%s  parse_tag raised: %s",
                      gate._name, gate._gate, uid_hex, e)
 
 
@@ -368,24 +368,24 @@ def capture_ntag_metadata(gate, tag):
             tlv = _find_ndef_tlv(raw)
             if tlv is not None:
                 logger.info(
-                    "nfc_gate: [%s] gate %d — uid=%s  NTAG read %d bytes "
+                    "[%s]: gate %d — uid=%s  NTAG read %d bytes "
                     "(NDEF length=%d, %s)",
                     gate._name, gate._gate, uid_hex, len(raw),
                     tlv['ndef_len'], 'complete' if tlv['complete'] else 'partial')
                 for text in _decode_ndef_text_records(tlv['payload']):
                     logger.info(
-                        "nfc_gate: [%s] gate %d — uid=%s  NDEF text: %s",
+                        "[%s]: gate %d — uid=%s  NDEF text: %s",
                         gate._name, gate._gate, uid_hex,
                         _single_line_preview(text))
             else:
-                logger.info("nfc_gate: [%s] gate %d — uid=%s  NTAG read %d bytes",
+                logger.info("[%s]: gate %d — uid=%s  NTAG read %d bytes",
                             gate._name, gate._gate, uid_hex, len(raw))
     except Exception as e:
         tag.parse_error = 'ntag read failed: {}'.format(e)
         tag.meta = {'uid': uid_hex}
         tag.read_incomplete = True
         tag.read_retry_reason = tag.parse_error
-        logger.warning("nfc_gate: [%s] gate %d — uid=%s  NTAG read failed: %s",
+        logger.warning("[%s]: gate %d — uid=%s  NTAG read failed: %s",
                        gate._name, gate._gate, uid_hex, e)
         return
     if not raw:
@@ -393,7 +393,7 @@ def capture_ntag_metadata(gate, tag):
         tag.meta = {'uid': uid_hex}
         tag.read_incomplete = True
         tag.read_retry_reason = tag.parse_error
-        logger.warning("nfc_gate: [%s] gate %d — uid=%s  NTAG read returned no data",
+        logger.warning("[%s]: gate %d — uid=%s  NTAG read returned no data",
                        gate._name, gate._gate, uid_hex)
         return
     parse_current_tag(gate, tag)
@@ -437,7 +437,7 @@ def capture_mifare_metadata(gate, tag, sector_keys):
         tag.read_incomplete = True
         tag.read_retry_reason = tag.parse_error
         logger.warning(
-            "nfc_gate: [%s] gate %d — uid=%s  MIFARE read failed: %s",
+            "[%s]: gate %d — uid=%s  MIFARE read failed: %s",
             gate._name, gate._gate, uid_hex, e)
         return
     if isinstance(block_dict, dict):
@@ -462,14 +462,14 @@ def capture_mifare_metadata(gate, tag, sector_keys):
         if not tag.read_retry_reason:
             tag.read_retry_reason = tag.parse_error
         logger.warning(
-            "nfc_gate: [%s] gate %d — uid=%s  MIFARE read returned no "
+            "[%s]: gate %d — uid=%s  MIFARE read returned no "
             "blocks (auth failed on all sectors?)",
             gate._name, gate._gate, uid_hex)
         return
     tag.raw_tag_data = block_dict
     if gate._debug >= 3:
         logger.info(
-            "nfc_gate: [%s] gate %d — uid=%s  MIFARE read %d blocks",
+            "[%s]: gate %d — uid=%s  MIFARE read %d blocks",
             gate._name, gate._gate, uid_hex, len(block_dict['blocks']))
     parse_current_tag(gate, tag)
 
@@ -499,7 +499,7 @@ def read_current_tag(gate):
     strategy = classify_tag_target(gate, target_info)
     if gate._debug >= 3:
         logger.info(
-            "nfc_gate: [%s] gate %d — uid=%s  target strategy=%s "
+            "[%s]: gate %d — uid=%s  target strategy=%s "
             "SAK=0x%02X ATQA=0x%04X",
             gate._name, gate._gate, uid_hex, strategy,
             int(target_info.get('sak', 0) or 0),
@@ -513,7 +513,7 @@ def read_current_tag(gate):
             release_reader_target(gate, "mifare_disabled")
             if gate._debug >= 3:
                 logger.info(
-                    "nfc_gate: [%s] gate %d — uid=%s  MIFARE Classic "
+                    "[%s]: gate %d — uid=%s  MIFARE Classic "
                     "target seen but bambu_reads is disabled; UID-only fallback",
                     gate._name, gate._gate, uid_hex)
             return uid_hex
@@ -523,13 +523,13 @@ def read_current_tag(gate):
             release_reader_target(gate, "mifare_key_failure")
             if gate._debug >= 3:
                 logger.info(
-                    "nfc_gate: [%s] gate %d — uid=%s  MIFARE key "
+                    "[%s]: gate %d — uid=%s  MIFARE key "
                     "derivation failed: %s; UID-only fallback",
                     gate._name, gate._gate, uid_hex, reason)
         else:
             if gate._debug >= 3:
                 logger.info(
-                    "nfc_gate: [%s] gate %d — uid=%s  MIFARE Classic "
+                    "[%s]: gate %d — uid=%s  MIFARE Classic "
                     "Bambu keys derived; reading sectors 0-4",
                     gate._name, gate._gate, uid_hex)
             capture_mifare_metadata(gate, tag, keys)
@@ -548,7 +548,7 @@ def read_current_tag(gate):
         release_reader_target(gate, "unsupported_uid_only_fallback")
         if gate._debug >= 3:
             logger.info(
-                "nfc_gate: [%s] gate %d — uid=%s  unsupported target; "
+                "[%s]: gate %d — uid=%s  unsupported target; "
                 "UID-only fallback", gate._name, gate._gate, uid_hex)
 
     return uid_hex
@@ -570,7 +570,7 @@ def resolve_spool(gate, uid_hex):
 
     if gate._debug >= 3:
         logger.info(
-            "nfc_gate: [%s] gate %d — uid=%s  resolve_spool begin "
+            "[%s]: gate %d — uid=%s  resolve_spool begin "
             "metadata=%s tag_parse_error=%s",
             gate._name, gate._gate, uid_hex, _summarize_meta(meta),
             getattr(tag, 'parse_error', None) if tag is not None else None)
@@ -584,7 +584,7 @@ def resolve_spool(gate, uid_hex):
             tag.resolution['path'] = 'structured_read_incomplete'
         if gate._debug >= 3:
             logger.info(
-                "nfc_gate: [%s] gate %d — uid=%s  structured tag read "
+                "[%s]: gate %d — uid=%s  structured tag read "
                 "is incomplete; deferring metadata assignment until "
                 "scan-jog finds a complete read window",
                 gate._name, gate._gate, uid_hex)
@@ -596,12 +596,12 @@ def resolve_spool(gate, uid_hex):
                 tag.resolution = {'path': 'metadata_direct'}
             if gate._debug >= 3:
                 logger.info(
-                    "nfc_gate: [%s] gate %d — uid=%s  no Spoolman; "
+                    "[%s]: gate %d — uid=%s  no Spoolman; "
                     "using tag metadata material=%s color=%s",
                     gate._name, gate._gate, uid_hex, material, color)
             return DIRECT_METADATA_SPOOL
         if gate._debug >= 3:
-            logger.info("nfc_gate: [%s] gate %d — uid=%s  no Spoolman configured",
+            logger.info("[%s]: gate %d — uid=%s  no Spoolman configured",
                         gate._name, gate._gate, uid_hex)
         return None
 
@@ -611,7 +611,7 @@ def resolve_spool(gate, uid_hex):
             if spool_id is not None:
                 if gate._debug >= 3:
                     logger.info(
-                        "nfc_gate: [%s] gate %d — uid=%s  "
+                        "[%s]: gate %d — uid=%s  "
                         "Spoolman→spool_id=%s (early UID lookup)",
                         gate._name, gate._gate, uid_hex, spool_id)
                 return spool_id
@@ -620,7 +620,7 @@ def resolve_spool(gate, uid_hex):
     if spoolman_id not in (None, ''):
         if gate._debug >= 3:
             logger.info(
-                "nfc_gate: [%s] gate %d — uid=%s  resolution step: "
+                "[%s]: gate %d — uid=%s  resolution step: "
                 "checking embedded spoolman_id=%r",
                 gate._name, gate._gate, uid_hex, spoolman_id)
         try:
@@ -628,7 +628,7 @@ def resolve_spool(gate, uid_hex):
         except (TypeError, ValueError):
             spoolman_id = None
             logger.warning(
-                "nfc_gate: [%s] gate %d — uid=%s  invalid embedded "
+                "[%s]: gate %d — uid=%s  invalid embedded "
                 "spoolman_id=%r; falling back to UID lookup",
                 gate._name, gate._gate, uid_hex, meta.get('spoolman_id'))
         if spoolman_id is not None:
@@ -644,19 +644,19 @@ def resolve_spool(gate, uid_hex):
                                       'spool_id': resolved_id}
                 if gate._debug >= 3:
                     logger.info(
-                        "nfc_gate: [%s] gate %d — uid=%s  "
+                        "[%s]: gate %d — uid=%s  "
                         "embedded spoolman_id=%s resolved",
                         gate._name, gate._gate, uid_hex, resolved_id)
                 return resolved_id
             if gate._debug >= 3:
                 logger.info(
-                    "nfc_gate: [%s] gate %d — uid=%s  "
+                    "[%s]: gate %d — uid=%s  "
                     "embedded spoolman_id=%s not found; falling back",
                     gate._name, gate._gate, uid_hex, spoolman_id)
 
     if gate._debug >= 3:
         logger.info(
-            "nfc_gate: [%s] gate %d — uid=%s  resolution step: "
+            "[%s]: gate %d — uid=%s  resolution step: "
             "checking Spoolman extra UID field %s",
             gate._name, gate._gate, uid_hex, gate._spoolman._rfid_key)
     spool_id = gate._spoolman.lookup_spool_by_uid(uid_hex)
@@ -664,12 +664,12 @@ def resolve_spool(gate, uid_hex):
         if tag is not None:
             tag.resolution = {'path': 'uid_lookup', 'spool_id': spool_id}
         if gate._debug >= 3:
-            logger.info("nfc_gate: [%s] gate %d — uid=%s  Spoolman→spool_id=%s",
+            logger.info("[%s]: gate %d — uid=%s  Spoolman→spool_id=%s",
                         gate._name, gate._gate, uid_hex, spool_id)
         return spool_id
     if gate._debug >= 3:
         logger.info(
-            "nfc_gate: [%s] gate %d — uid=%s  UID lookup found no spool; "
+            "[%s]: gate %d — uid=%s  UID lookup found no spool; "
             "checking whether metadata can create or directly represent a spool "
             "(material=%r color=%r)",
             gate._name, gate._gate, uid_hex, material, color)
@@ -682,7 +682,7 @@ def resolve_spool(gate, uid_hex):
             tag.resolution['path'] = 'structured_read_incomplete'
         if gate._debug >= 3:
             logger.info(
-                "nfc_gate: [%s] gate %d — uid=%s  structured tag read "
+                "[%s]: gate %d — uid=%s  structured tag read "
                 "is incomplete; deferring auto-create/metadata assignment "
                 "until scan-jog finds a complete read window",
                 gate._name, gate._gate, uid_hex)
@@ -693,14 +693,14 @@ def resolve_spool(gate, uid_hex):
     except Exception as e:
         base_url = None
         logger.warning(
-            "nfc_gate: [%s] gate %d — uid=%s  Spoolman URL resolution failed: %s",
+            "[%s]: gate %d — uid=%s  Spoolman URL resolution failed: %s",
             gate._name, gate._gate, uid_hex, e)
     if not base_url and (material or color):
         if tag is not None:
             tag.resolution = {'path': 'metadata_direct'}
         if gate._debug >= 3:
             logger.info(
-                "nfc_gate: [%s] gate %d — uid=%s  Spoolman disabled "
+                "[%s]: gate %d — uid=%s  Spoolman disabled "
                 "or undiscovered; using tag metadata material=%s color=%s",
                 gate._name, gate._gate, uid_hex, material, color)
         return DIRECT_METADATA_SPOOL
@@ -716,14 +716,14 @@ def resolve_spool(gate, uid_hex):
                         timeout=gate._spoolman._timeout,
                         trace=_trace_for_gate(
                             gate,
-                            "nfc_gate: [%s] gate %d — uid=%s  " %
+                            "[%s]: gate %d — uid=%s  " %
                             (gate._name, gate._gate, uid_hex)))
                 else:
                     lb = LBSpoolmanClient(base_url=base_url,
                                           timeout=gate._spoolman._timeout)
                 if gate._debug >= 3:
                     logger.info(
-                        "nfc_gate: [%s] gate %d — uid=%s  "
+                        "[%s]: gate %d — uid=%s  "
                         "auto-create via lameandboard client "
                         "(uid_hex=None; patching %s next) metadata=%s",
                         gate._name, gate._gate, uid_hex,
@@ -745,7 +745,7 @@ def resolve_spool(gate, uid_hex):
                     new_spool_id = int(new_spool_id)
                     if gate._debug >= 3:
                         logger.info(
-                            "nfc_gate: [%s] gate %d — uid=%s  "
+                            "[%s]: gate %d — uid=%s  "
                             "auto-created Spoolman spool_id=%s; patching extra[%s]",
                             gate._name, gate._gate, uid_hex, new_spool_id,
                             gate._spoolman._rfid_key)
@@ -756,7 +756,7 @@ def resolve_spool(gate, uid_hex):
                                 'spool_id': new_spool_id,
                             }
                         logger.warning(
-                            "nfc_gate: [%s] gate %d — uid=%s  "
+                            "[%s]: gate %d — uid=%s  "
                             "auto-created Spoolman spool_id=%s but "
                             "failed to patch extra[%s]; treating as "
                             "unresolved so the next read does not lose "
@@ -770,24 +770,24 @@ def resolve_spool(gate, uid_hex):
                                           'spool_id': new_spool_id}
                     if gate._debug >= 3:
                         logger.info(
-                            "nfc_gate: [%s] gate %d — uid=%s  "
+                            "[%s]: gate %d — uid=%s  "
                             "auto-created Spoolman spool_id=%s and patched extra[%s]",
                             gate._name, gate._gate, uid_hex, new_spool_id,
                             gate._spoolman._rfid_key)
                     return new_spool_id
                 logger.warning(
-                    "nfc_gate: [%s] gate %d — uid=%s  auto-create returned no spool_id",
+                    "[%s]: gate %d — uid=%s  auto-create returned no spool_id",
                     gate._name, gate._gate, uid_hex)
             except Exception as e:
                 logger.warning(
-                    "nfc_gate: [%s] gate %d — uid=%s  Spoolman auto-create failed: %s",
+                    "[%s]: gate %d — uid=%s  Spoolman auto-create failed: %s",
                     gate._name, gate._gate, uid_hex, e)
         elif material or color:
             if tag is not None:
                 tag.resolution = {'path': 'metadata_direct'}
             if gate._debug >= 3:
                 logger.info(
-                    "nfc_gate: [%s] gate %d — uid=%s  Spoolman unavailable; "
+                    "[%s]: gate %d — uid=%s  Spoolman unavailable; "
                     "using tag metadata material=%s color=%s",
                     gate._name, gate._gate, uid_hex, material, color)
             return DIRECT_METADATA_SPOOL
@@ -799,12 +799,12 @@ def resolve_spool(gate, uid_hex):
         else:
             reason = 'unknown'
         logger.info(
-            "nfc_gate: [%s] gate %d — uid=%s  auto-create skipped: %s",
+            "[%s]: gate %d — uid=%s  auto-create skipped: %s",
             gate._name, gate._gate, uid_hex, reason)
 
     if tag is not None:
         tag.resolution = {'path': 'unresolved'}
     if gate._debug >= 3:
-        logger.info("nfc_gate: [%s] gate %d — uid=%s  Spoolman→spool_id=None",
+        logger.info("[%s]: gate %d — uid=%s  Spoolman→spool_id=None",
                     gate._name, gate._gate, uid_hex)
     return None
