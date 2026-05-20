@@ -5,6 +5,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.9.15] - 05/19/2026 - WoodWorker
+
+### Pending Spool Timeout Now Sourced from Happy Hare
+
+- Removed `shared_pending_timeout` as a configurable key in `[nfc_gate shared]`. The pending window is now read automatically from Happy Hare's `mmu_parameters.cfg` (`[mmu] → pending_spool_id_timeout`) at Klipper connect time via the Klipper `configfile` object. Falls back to 30 s if the value cannot be read.
+- `nfc_reader_shared.cfg` and the installer-generated shared config now carry a comment directing users to set `pending_spool_id_timeout` in `mmu_parameters.cfg` instead of a local override.
+- Documentation updated across `docs/shared/configuration.md`, `docs/shared/shared-reader.md`, `docs/shared/klipper-functions.md`, and the design docs to reference the HH parameter.
+
+---
+
 ## [05/19/2026] - WoodWorker
 
 ### Shared Reader Preload — Spool ID Timing Fix

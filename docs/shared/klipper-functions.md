@@ -643,10 +643,10 @@ shared-reader installs also clear that stale Happy Hare gate assignment with
 
 ### Pending timeout
 
-`shared_pending_timeout` starts when a tag resolves. If no preload fires within
-that window, the pending spool expires automatically. With `startup_polling: 1`,
-polling resumes after the expired spool is cleared. Tap again to queue a new
-spool.
+The pending timeout (`pending_spool_id_timeout` in Happy Hare's `mmu_parameters.cfg`)
+starts when a tag resolves. If no preload fires within that window, the pending
+spool expires automatically. With `startup_polling: 1`, polling resumes after
+the expired spool is cleared. Tap again to queue a new spool.
 
 ### Unresolvable tags
 
