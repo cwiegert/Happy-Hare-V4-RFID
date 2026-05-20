@@ -9,13 +9,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Shared Reader LEDs
 
+- Changed shared-reader ready, bypass-ready, and warning LED defaults from strobes to breathing-style effects so staged/ready feedback is calmer while the EMU waits.
+- Updated `_NFC_SHARED_PRELOAD` to call `MMU_GATE_MAP REFRESH=1 SYNC=1 QUIET=1` after successful preload handling, nudging Happy Hare/EMU UI state to refresh after NFC clears the pending spool.
 - Fixed bypass unresolved-tag feedback replaying across the shared reader's missed-resolution retries. The unresolved red LED effect now starts only once for an unresolved tag sequence, so bypass mode no longer appears to flash 6 times from three repeated attempts.
 - Changed `mmu_RFID_unresolved` to exactly 2 red flashes (`strobe 2 2`) and updated shared-reader config comments, installer text, and docs to match.
 - Kept bypass-ready confirmation bounded at 2 seconds and ensured scheduled LED timers stop the exact effect that was started.
+- Added configurable shared-reader LED stop durations (`read_effect_duration`, `bypass_read_effect_duration`, `ready_effect_duration`, `bypass_ready_effect_duration`, and `unresolved_effect_duration`) next to their related effect names in `nfc_reader_shared.cfg`.
 
 ### Tests
 
 - Added regression coverage proving repeated unresolved shared-reader events only start the red unresolved LED effect once.
+- Added regression coverage for custom shared-reader LED effect durations.
 
 ---
 

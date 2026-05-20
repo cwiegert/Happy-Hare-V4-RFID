@@ -360,8 +360,15 @@ shared:                 true
 startup_polling:        1
 shared_read_timeout:    120.0
 shared_tag_read_effect: mmu_RFID_read
+read_effect_duration:   4.0
+shared_bypass_tag_read_effect: mmu_RFID_bypass_read
+bypass_read_effect_duration:   4.0
 shared_spool_ready_effect: mmu_RFID_ready
+ready_effect_duration:  4.0
+shared_bypass_spool_ready_effect: mmu_RFID_bypass_ready
+bypass_ready_effect_duration: 2.0
 shared_tag_unresolved_effect: mmu_RFID_unresolved
+unresolved_effect_duration: 2.0
 shared_missed_limit:    3
 force_spool_id:         true
 ```
@@ -375,8 +382,15 @@ force_spool_id:         true
 | `pending_spool_id_timeout` | set in `mmu_parameters.cfg` | Seconds a scanned spool remains eligible for the next preload. NFC reads this from Happy Hare's `[mmu]` section at connect time (falls back to 30 s). Set it in `~/printer_data/config/mmu/base/mmu_parameters.cfg`. |
 | `shared_read_timeout` | `120.0` | Seconds polling may run without resolving a valid tag before auto-stopping. No effect when started via `startup_polling` or PRELOAD_CHECK auto-restart. |
 | `shared_tag_read_effect` | `''` | Name of a `[mmu_led_effect]` to play as soon as the shared reader sees a tag. Leave empty to skip tag-detected LED feedback. |
+| `read_effect_duration` | `4.0` | Seconds before NFC stops `shared_tag_read_effect`. Use with the effect's strobe layer to control total animation length. |
+| `shared_bypass_tag_read_effect` | `mmu_RFID_bypass_read` | Name of a `[mmu_led_effect]` to play when a tag is seen while Happy Hare bypass is selected. |
+| `bypass_read_effect_duration` | `4.0` | Seconds before NFC stops `shared_bypass_tag_read_effect`. |
 | `shared_spool_ready_effect` | `''` | Name of a `[mmu_led_effect]` to play when the tag resolves to a Spoolman spool and is ready to load. Leave empty to skip ready LED feedback. |
+| `ready_effect_duration` | `4.0` | Seconds before NFC stops `shared_spool_ready_effect` when it is used as the immediate bypass fallback confirmation. Normal staged-spool ready feedback still runs until preload commit/cancel/timeout. |
+| `shared_bypass_spool_ready_effect` | `mmu_RFID_bypass_ready` | Name of a `[mmu_led_effect]` to play when a bypass spool resolves. |
+| `bypass_ready_effect_duration` | `2.0` | Seconds before NFC stops `shared_bypass_spool_ready_effect`. |
 | `shared_tag_unresolved_effect` | `''` | Name of a `[mmu_led_effect]` to play when the tag UID does not resolve to a spool. Leave empty to skip unresolved LED feedback. |
+| `unresolved_effect_duration` | `2.0` | Seconds before NFC stops `shared_tag_unresolved_effect`. For example, `layers: strobe 2 2 ...` plus `unresolved_effect_duration: 1.0` plays two flashes and stops after 1 second. |
 | `shared_missed_limit` | `3` | Consecutive unresolvable UID reads before a console error advises the user to use `MMU_PRELOAD`. Minimum 1. |
 | `force_spool_id` | `true` | When `true`, `PRELOAD_CHECK` emits a red console advisory if no spool is staged, telling the user to scan a tag before loading. |
 

@@ -151,6 +151,11 @@ _shared_instance = None
 # logging and (internally) as a guard against accidentally seeding from HH.
 _SHARED_GATE_SENTINEL            = 255
 _SHARED_MISSED_RESOLUTION_LIMIT  = 3
+_SHARED_READ_EFFECT_DURATION     = 4.0
+_SHARED_BYPASS_READ_EFFECT_DURATION = 4.0
+_SHARED_READY_EFFECT_DURATION    = 4.0
+_SHARED_BYPASS_READY_EFFECT_DURATION = 2.0
+_SHARED_UNRESOLVED_EFFECT_DURATION = 2.0
 
 
 def nfc_gate_for_gate_number(gate_number):
@@ -596,14 +601,29 @@ class NFCGate:
                 'shared_led_segment', 'exit').strip().lower()
             self._shared_tag_read_effect = config.get(
                 'shared_tag_read_effect', '')
+            self._shared_read_effect_duration = config.getfloat(
+                'read_effect_duration', _SHARED_READ_EFFECT_DURATION,
+                minval=0.1)
             self._shared_bypass_tag_read_effect = config.get(
                 'shared_bypass_tag_read_effect', 'mmu_RFID_bypass_read')
+            self._shared_bypass_read_effect_duration = config.getfloat(
+                'bypass_read_effect_duration',
+                _SHARED_BYPASS_READ_EFFECT_DURATION, minval=0.1)
             self._shared_spool_ready_effect = config.get(
                 'shared_spool_ready_effect', '')
+            self._shared_ready_effect_duration = config.getfloat(
+                'ready_effect_duration', _SHARED_READY_EFFECT_DURATION,
+                minval=0.1)
             self._shared_bypass_spool_ready_effect = config.get(
                 'shared_bypass_spool_ready_effect', 'mmu_RFID_bypass_ready')
+            self._shared_bypass_ready_effect_duration = config.getfloat(
+                'bypass_ready_effect_duration',
+                _SHARED_BYPASS_READY_EFFECT_DURATION, minval=0.1)
             self._shared_tag_unresolved_effect = config.get(
                 'shared_tag_unresolved_effect', '')
+            self._shared_unresolved_effect_duration = config.getfloat(
+                'unresolved_effect_duration',
+                _SHARED_UNRESOLVED_EFFECT_DURATION, minval=0.1)
             self._shared_spool_warning_effect = config.get(
                 'shared_spool_warning_effect', 'mmu_RFID_warning')
             self._shared_auto_create_effect = config.get(
@@ -617,10 +637,18 @@ class NFCGate:
             self._shared_pending_timeout = 30.0
             self._shared_read_timeout    = 120.0
             self._shared_tag_read_effect    = ''
+            self._shared_read_effect_duration = _SHARED_READ_EFFECT_DURATION
             self._shared_bypass_tag_read_effect = ''
+            self._shared_bypass_read_effect_duration = (
+                _SHARED_BYPASS_READ_EFFECT_DURATION)
             self._shared_spool_ready_effect = ''
+            self._shared_ready_effect_duration = _SHARED_READY_EFFECT_DURATION
             self._shared_bypass_spool_ready_effect = ''
+            self._shared_bypass_ready_effect_duration = (
+                _SHARED_BYPASS_READY_EFFECT_DURATION)
             self._shared_tag_unresolved_effect = ''
+            self._shared_unresolved_effect_duration = (
+                _SHARED_UNRESOLVED_EFFECT_DURATION)
             self._shared_spool_warning_effect  = ''
             self._shared_auto_create_effect = ''
             self._shared_force_spool_id     = False
@@ -778,10 +806,13 @@ class NFCGate:
             lambda et, _s=script: self._safe_run_script(_s))
         return True
 
-    def _shared_play_tag_read_effect(self, gcmd=None, effect_name=None):
+    def _shared_play_tag_read_effect(self, gcmd=None, effect_name=None,
+                                     duration=None):
         effect_name = effect_name or self._shared_tag_read_effect
+        duration = (self._shared_read_effect_duration
+                    if duration is None else duration)
         if self._shared_play_led_effect(effect_name, gcmd):
-            self._shared_schedule_effect_stop(4.0, effect_name)
+            self._shared_schedule_effect_stop(duration, effect_name)
         return True
 
     def _shared_play_spool_ready_effect(self):
@@ -790,7 +821,8 @@ class NFCGate:
     def _shared_play_tag_unresolved_effect(self):
         if self._shared_play_led_effect(self._shared_tag_unresolved_effect):
             self._shared_schedule_effect_stop(
-                2.0, self._shared_tag_unresolved_effect)
+                self._shared_unresolved_effect_duration,
+                self._shared_tag_unresolved_effect)
 
     def _shared_play_auto_create_effect(self):
         self._shared_play_led_effect(self._shared_auto_create_effect)
@@ -1577,7 +1609,8 @@ class NFCGate:
             if self._shared_tag_read_effect or self._shared_bypass_tag_read_effect:
                 if self._shared_bypass_selected() and self._shared_bypass_tag_read_effect:
                     self._shared_play_tag_read_effect(
-                        effect_name=self._shared_bypass_tag_read_effect)
+                        effect_name=self._shared_bypass_tag_read_effect,
+                        duration=self._shared_bypass_read_effect_duration)
                 else:
                     self._shared_play_tag_read_effect()
             if self._debug >= 2:
@@ -1644,10 +1677,13 @@ class NFCGate:
         if self._shared_bypass_spool_ready_effect:
             self._shared_play_led_effect(self._shared_bypass_spool_ready_effect)
             self._shared_schedule_effect_stop(
-                2.0, self._shared_bypass_spool_ready_effect)
+                self._shared_bypass_ready_effect_duration,
+                self._shared_bypass_spool_ready_effect)
         elif self._shared_spool_ready_effect:
             self._shared_play_spool_ready_effect()
-            self._shared_schedule_effect_stop(4.0, self._shared_spool_ready_effect)
+            self._shared_schedule_effect_stop(
+                self._shared_ready_effect_duration,
+                self._shared_spool_ready_effect)
         self._shared_last_action = (
             "bypass active spool set to %d uid=%s auto_created=%s"
             % (spool, uid, auto_created))
