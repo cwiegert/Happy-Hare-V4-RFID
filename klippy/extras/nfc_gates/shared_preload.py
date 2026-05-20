@@ -188,7 +188,7 @@ class SharedPreloadCoordinator:
                      if assigned_gate >= 0 else "a gate")
             gcmd.respond_info(color_console_tags(
                 "[WARN] "
-                "NFC[%s]: spool %d already assigned to %s; clearing stale "
+                "[%s]: spool %d already assigned to %s; clearing stale "
                 "Happy Hare assignment"
                 % (gate._name, spool_id, where)))
         gate._shared_clear_pending()

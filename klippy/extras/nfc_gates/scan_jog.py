@@ -388,7 +388,7 @@ def step_event(gate, eventtime):
         logger.info(msg)
         gate._console(msg)
         if gate._debug >= 4:
-            logger.debug("NFC[%s]: run_script MMU_TEST_MOVE MOVE=%.2f QUIET=1",
+            logger.debug("[%s]: run_script MMU_TEST_MOVE MOVE=%.2f QUIET=1",
                          gate._name.capitalize(), chunk)
         gate._run_jog(chunk)
         gate._scan_mm_total += chunk
@@ -396,7 +396,7 @@ def step_event(gate, eventtime):
         gate._scan_next_chunk_time = (
             gate.reactor.monotonic() + gate._scan_poll_interval)
         logger.info(
-            "NFC[%s]: move queued %.1fmm  scan position %.1f / %.1fmm",
+            "[%s]: move queued %.1fmm  scan position %.1f / %.1fmm",
             gate._name.capitalize(), chunk, gate._scan_mm_total, gate._scan_max_mm)
 
     return gate._scan_next_chunk_time
@@ -437,7 +437,7 @@ def spool_identity_for_gate(gate, target_gate):
     left_nfc = gate._nfc_gate_for_gate_number(target_gate)
     if left_nfc is None:
         if gate._debug >= 4:
-            logger.debug("NFC[%s]: left gate %d has no NFC instance",
+            logger.debug("[%s]: left gate %d has no NFC instance",
                          gate._name.capitalize(), target_gate)
         return None
     left_tag = getattr(left_nfc._state, 'current_tag', None)
@@ -446,7 +446,7 @@ def spool_identity_for_gate(gate, target_gate):
         if left_tag is not None else None)
     if not left_identity:
         if gate._debug >= 4:
-            logger.debug("NFC[%s]: left gate %d NFC cache has no spool_identity",
+            logger.debug("[%s]: left gate %d NFC cache has no spool_identity",
                          gate._name.capitalize(), target_gate)
         return None
 
@@ -461,7 +461,7 @@ def spool_identity_for_gate(gate, target_gate):
         return None
     if gate._debug >= 4:
         logger.debug(
-            "NFC[%s]: left gate %d spool_identity=%s hh_available=%s",
+            "[%s]: left gate %d spool_identity=%s hh_available=%s",
             gate._name.capitalize(), target_gate, left_identity,
             left_hh.available if left_hh.present else "hh-absent")
     return left_identity
@@ -474,14 +474,14 @@ def is_left_neighbor_spool_identity_match(gate):
     if not identity:
         if gate._debug >= 4:
             logger.debug(
-                "NFC[%s]: interference check skipped; current spool_identity unavailable",
+                "[%s]: interference check skipped; current spool_identity unavailable",
                 gate._name.capitalize())
         return False
     left_identity = spool_identity_for_gate(gate, gate._gate - 1)
     result = left_identity is not None and left_identity == identity
     if gate._debug >= 4:
         logger.debug(
-            "NFC[%s]: interference check spool_identity=%s left_spool_identity=%s -> %s",
+            "[%s]: interference check spool_identity=%s left_spool_identity=%s -> %s",
             gate._name.capitalize(), identity, left_identity,
             "match" if result else "no match")
     return result
@@ -795,7 +795,7 @@ def queue_decode_retry_move(gate, now, uid, reason, max_attempts, retry_mm):
     gate._scan_decode_retry_offset += move
     gate._scan_next_chunk_time = gate.reactor.monotonic() + DECODE_RETRY_SETTLE_DELAY
     logger.info(
-        "NFC[%s]: decode retry move queued %.1fmm  scan position %.1f / %.1fmm",
+        "[%s]: decode retry move queued %.1fmm  scan position %.1f / %.1fmm",
         gate._name.capitalize(), move, gate._scan_mm_total, gate._scan_max_mm)
     return True
 
@@ -865,7 +865,7 @@ def retry_incomplete_decode(gate, now):
     gate._scan_decode_retry_offset += move
     gate._scan_next_chunk_time = gate.reactor.monotonic() + DECODE_RETRY_SETTLE_DELAY
     logger.info(
-        "NFC[%s]: decode retry move queued %.1fmm  scan position %.1f / %.1fmm",
+        "[%s]: decode retry move queued %.1fmm  scan position %.1f / %.1fmm",
         gate._name.capitalize(), move, gate._scan_mm_total, gate._scan_max_mm)
     return True
 

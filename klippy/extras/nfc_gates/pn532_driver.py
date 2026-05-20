@@ -1460,7 +1460,7 @@ def low_level_debug_help_lines(command_base):
 
 
 def _ll_response(gcmd, label, message):
-    gcmd.respond_info("NFC[%s]: %s" % (label, message))
+    gcmd.respond_info("[%s]: %s" % (label, message))
 
 
 def _ll_next(gcmd, label, command_base, next_args):

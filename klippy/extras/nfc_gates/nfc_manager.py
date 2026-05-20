@@ -688,10 +688,10 @@ class NFCGate:
         try:
             target_info = self._reader.read_target()
             if target_info is None:
-                gcmd.respond_info("NFC[%s]: no tag detected" % self._name)
+                gcmd.respond_info("[%s]: no tag detected" % self._name)
                 return
             gcmd.respond_info(
-                "NFC[%s]: UID=%s Tg=%s SENS_RES=0x%04X SAK=0x%02X UIDLen=%d"
+                "[%s]: UID=%s Tg=%s SENS_RES=0x%04X SAK=0x%02X UIDLen=%d"
                 % (self._name, target_info['uid'], target_info['target'],
                    target_info['sens_res'], target_info['sak'],
                    target_info['uid_length']))
@@ -725,7 +725,7 @@ class NFCGate:
                     "nfc_gate: [%s] startup polling enabled; first poll in %.1fs",
                     self._name, 0.0)
                 gcmd.respond_info(
-                    "NFC[%s]: startup polling resumed" % self._name)
+                    "[%s]: startup polling resumed" % self._name)
         except Exception as e:
             self._failed = True
             logger.error("nfc_gate: [%s] init error: %s", self._name, e)
@@ -760,7 +760,7 @@ class NFCGate:
             self._name, gate_effect)
         if gcmd is not None:
             gcmd.respond_info(
-                "NFC[%s]: LED effect %s started" % (self._name, gate_effect))
+                "[%s]: LED effect %s started" % (self._name, gate_effect))
         # Deferred via async callback — safe from both timer callbacks and
         # GCode handlers (run_script from a GCode handler re-enters the
         # GCode mutex and deadlocks).
@@ -885,7 +885,7 @@ class NFCGate:
                     self._name, self._shared_read_timeout)
             self._polling = True
             self.reactor.update_timer(self._poll_timer, self.reactor.NOW)
-            gcmd.respond_info("NFC[%s]: polling started" % self._name)
+            gcmd.respond_info("[%s]: polling started" % self._name)
         else:
             if self._shared:
                 self._shared_read_deadline = 0.0
@@ -895,7 +895,7 @@ class NFCGate:
                     self._name, self._shared_pending_spool)
             self._polling = False
             self.reactor.update_timer(self._poll_timer, self.reactor.NEVER)
-            gcmd.respond_info("NFC[%s]: polling stop requested" % self._name)
+            gcmd.respond_info("[%s]: polling stop requested" % self._name)
 
     def _clear_spool_cache(self, gcmd):
         """Clear cached spool resolution without dispatching a state change."""
@@ -912,7 +912,7 @@ class NFCGate:
             "(uid=%s old_spool=%s); next read will resolve Spoolman again",
             self._name, self._gate, self._state.current_uid, old_spool)
         gcmd.respond_info(
-            "NFC[%s]: cleared cached spool_id for gate %d; "
+            "[%s]: cleared cached spool_id for gate %d; "
             "no NFC_Manager event was dispatched. Next tag read will resolve "
             "Spoolman again."
             % (self._name, self._gate))
@@ -931,14 +931,14 @@ class NFCGate:
             "pending spool=%s uid=%s kept",
             self._name, pending_spool, pending_uid)
         gcmd.respond_info(
-            "NFC[%s]: shared tag cache cleared; pending spool kept"
+            "[%s]: shared tag cache cleared; pending spool kept"
             % self._name)
 
     def _apply_current_spool(self, gcmd):
         """Dispatch the current cached spool to Happy Hare immediately."""
         if self._state.current_spool is None:
             gcmd.respond_info(
-                "NFC[%s]: no cached spool_id to apply; run POLL=1 first"
+                "[%s]: no cached spool_id to apply; run POLL=1 first"
                 % self._name)
             return
         uid_hex = self._state.current_uid or ''
@@ -952,7 +952,7 @@ class NFCGate:
             self._klipper.dispatch(EVENT_CHANGED, self._gate, uid_hex,
                                    None, meta=meta)
             gcmd.respond_info(
-                "NFC[%s]: dispatched cached tag metadata for gate %d to "
+                "[%s]: dispatched cached tag metadata for gate %d to "
                 "Happy Hare" % (self._name, self._gate))
             return
         logger.info(
@@ -960,7 +960,7 @@ class NFCGate:
             self._name, self._gate, spool_id, uid_hex)
         self._klipper.dispatch(EVENT_CHANGED, self._gate, uid_hex, spool_id)
         gcmd.respond_info(
-            "NFC[%s]: dispatched cached spool_id=%s for gate %d to "
+            "[%s]: dispatched cached spool_id=%s for gate %d to "
             "Happy Hare"
             % (self._name, spool_id, self._gate))
 
@@ -969,7 +969,7 @@ class NFCGate:
             self._polling = False
             self.reactor.update_timer(self._poll_timer, self.reactor.NEVER)
             gcmd.respond_info(
-                "NFC[%s]: polling paused for low-level PN532 debug" %
+                "[%s]: polling paused for low-level PN532 debug" %
                 self._name)
         try:
             return pn532_driver.run_low_level_debug(
@@ -977,7 +977,7 @@ class NFCGate:
                 "NFC GATE=%d" % self._gate,
                 self._low_level_debug)
         except Exception as e:
-            gcmd.respond_info("NFC[%s]: low-level debug failed: %s" %
+            gcmd.respond_info("[%s]: low-level debug failed: %s" %
                               (self._name, e))
             return True
 
@@ -1011,7 +1011,7 @@ class NFCGate:
             return
         if gcmd.get_int("POLL", 0):
             self._poll()
-            gcmd.respond_info("NFC[%s]: one poll complete; %s" %
+            gcmd.respond_info("[%s]: one poll complete; %s" %
                               (self._name, self.status_line().strip()))
             return
         if gcmd.get_int("APPLY", 0):
@@ -1109,7 +1109,7 @@ class NFCGate:
                 "nfc_gate: [%s] gate %d — HH_SYNC: seed set to spool_id=%d",
                 self._name, self._gate, spool_id)
             gcmd.respond_info(
-                "NFC[%s]: HH seed → spool_id=%d  "
+                "[%s]: HH seed → spool_id=%d  "
                 "(next poll matching this spool will not re-dispatch to HH)"
                 % (self._name, spool_id))
         else:
@@ -1118,7 +1118,7 @@ class NFCGate:
                 "nfc_gate: [%s] gate %d — HH_SYNC: gate empty/unknown, "
                 "seed cleared", self._name, self._gate)
             gcmd.respond_info(
-                "NFC[%s]: HH reports gate empty — seed cleared" % self._name)
+                "[%s]: HH reports gate empty — seed cleared" % self._name)
 
     def _handle_connect(self):
         global _shared_instance
@@ -1430,7 +1430,7 @@ class NFCGate:
                     self._scan_idle_ready_time = 0.0
                     if NFCGate._active_scan_gate is not None:
                         if not self._scan_deferred_notified:
-                            msg = ("NFC[%d]: scan-jog waiting — "
+                            msg = ("[%d]: scan-jog waiting — "
                                    "gate %d is already scanning"
                                    % (self._gate, NFCGate._active_scan_gate))
                             logger.info("nfc_gate: [%s] %s", self._name, msg)
@@ -1441,7 +1441,7 @@ class NFCGate:
                         return self._scan_idle_ready_time
                     ok, reason, max_mm = self._prepare_scan_jog(eventtime)
                     if not ok:
-                        msg = "NFC[%d]: scan-jog not available while %s" % (
+                        msg = "[%d]: scan-jog not available while %s" % (
                             self._gate, reason)
                         logger.warning("nfc_gate: [%s] %s", self._name, msg)
                         self._console("[WARN] " + msg)
@@ -2290,11 +2290,11 @@ class NFCGate:
         if pending_spool is not None:
             self._shared_clear_pending()
             gcmd.respond_info(
-                "NFC[%s]: discarded pending spool %s; polling restarted"
+                "[%s]: discarded pending spool %s; polling restarted"
                 % (self._name, pending_spool))
         else:
             gcmd.respond_info(
-                "NFC[%s]: no pending spool to replace; polling started"
+                "[%s]: no pending spool to replace; polling started"
                 % self._name)
         self._shared_missed_resolutions = 0
         self._shared_last_error = None
@@ -2335,7 +2335,7 @@ class NFCGate:
             self._state.current_uid   = None
             self._state.current_spool = None
             logger.info("nfc_gate: [%s] shared state cleared", self._name)
-            gcmd.respond_info("NFC[%s]: shared state cleared" % self._name)
+            gcmd.respond_info("[%s]: shared state cleared" % self._name)
             return
         if _flag_param(gcmd, 'PRELOAD_CHECK'):
             self._shared_preload_check(gcmd)
@@ -2354,7 +2354,7 @@ class NFCGate:
             self._shared_read_deadline = 0.0
             self.reactor.update_timer(self._poll_timer, self.reactor.NEVER)
             logger.info("nfc_gate: [%s] pending spool canceled", self._name)
-            gcmd.respond_info("NFC[%s]: pending spool canceled" % self._name)
+            gcmd.respond_info("[%s]: pending spool canceled" % self._name)
             return
         if _flag_param(gcmd, 'POLL'):
             if self._is_printing():
@@ -2368,7 +2368,7 @@ class NFCGate:
             logger.info(
                 "nfc_gate: [%s] shared POLL=1 complete — %s",
                 self._name, self.shared_status_line().strip())
-            gcmd.respond_info("NFC[%s]: one poll complete; %s" %
+            gcmd.respond_info("[%s]: one poll complete; %s" %
                               (self._name, self.shared_status_line().strip()))
             return
         if _flag_param(gcmd, 'SCAN'):
