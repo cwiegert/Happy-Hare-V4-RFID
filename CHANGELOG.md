@@ -5,6 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [05/21/2026] - WoodWorker
+
+### Hardware
+
+- Removed stale README from the `NFC Mounting Bracket` folder; only the STEP file remains.
+
+---
+
 ## [0.9.18] - 05/20/2026 - WoodWorker
 
 ### Test Suite — Macro Tests Updated
