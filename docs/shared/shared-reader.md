@@ -143,7 +143,6 @@ read_effect_duration:   2.0
 shared_bypass_tag_read_effect: mmu_RFID_bypass_read
 bypass_read_effect_duration:   2.0
 shared_spool_ready_effect: mmu_RFID_ready
-ready_effect_duration:  0.0
 shared_bypass_spool_ready_effect: mmu_RFID_bypass_ready
 bypass_ready_effect_duration: 2.0
 shared_tag_unresolved_effect: mmu_RFID_unresolved
@@ -164,21 +163,27 @@ force_spool_id:         true
 | `pending_spool_id_timeout` | set in `mmu_parameters.cfg` | Seconds a resolved spool stays eligible for the next preload. Set in Happy Hare's `[mmu]` section (`~/printer_data/config/mmu/base/mmu_parameters.cfg`); NFC reads it automatically at connect time (falls back to 30 s). |
 | `shared_read_timeout` | `120.0` | Seconds polling may run after `NFC_SHARED READ=1` without resolving a tag before auto-stopping. Has no effect when started via `startup_polling` or after a successful `PRELOAD_CHECK`. |
 | `shared_tag_read_effect` | `''` | Name of a `[mmu_led_effect]` to play as soon as the shared reader sees a tag. |
-| `read_effect_duration` | `2.0` | Seconds before NFC stops `shared_tag_read_effect`. |
+| `read_effect_duration` | `2.0` | HH duration used by `NFC_SHARED LED_TEST=1`. Normal shared scans do not pass this duration to HH; NFC uses it only as a failsafe release window if no follow-up state replaces the read cue. |
 | `shared_bypass_tag_read_effect` | `mmu_RFID_bypass_read` | Name of a `[mmu_led_effect]` to play when a tag is seen while bypass is selected. |
-| `bypass_read_effect_duration` | `2.0` | Seconds before NFC stops `shared_bypass_tag_read_effect`. |
-| `shared_spool_ready_effect` | `''` | Name of a `[mmu_led_effect]` to play when the tag resolves to a Spoolman spool and is ready to load. |
-| `ready_effect_duration` | `0.0` | Seconds before NFC stops `shared_spool_ready_effect` when it is used as the immediate bypass fallback confirmation. Normal staged-spool ready feedback runs until preload commit, cancel, or timeout. |
+| `bypass_read_effect_duration` | `2.0` | Reserved for standalone bypass-read feedback. Normal bypass reads stay interruptible because bypass-ready feedback is expected to follow. |
+| `shared_spool_ready_effect` | `''` | Name of a `[mmu_led_effect]` to play when the tag resolves to a Spoolman spool and is ready to load. Normal staged-spool ready feedback runs until preload commit, cancel, replace, or pending timeout; NFC then releases HH ownership with `MMU_GATE_MAP QUIET=1`. |
 | `shared_bypass_spool_ready_effect` | `mmu_RFID_bypass_ready` | Name of a `[mmu_led_effect]` to play when a bypass spool resolves. |
 | `bypass_ready_effect_duration` | `2.0` | Seconds before NFC stops `shared_bypass_spool_ready_effect`. |
 | `shared_tag_unresolved_effect` | `''` | Name of a `[mmu_led_effect]` to play when the tag UID does not resolve to a spool. |
 | `unresolved_effect_duration` | `2.0` | Seconds before NFC stops `shared_tag_unresolved_effect`. For example, `layers: strobe 2 2 ...` plus `unresolved_effect_duration: 1.0` plays two flashes and stops after 1 second. |
-| `shared_spool_warning_effect` | `mmu_RFID_warning` | Name of a `[mmu_led_effect]` to play when the staged spool reaches 80% of its pending timeout. |
+| `shared_spool_warning_effect` | `mmu_RFID_warning` | Name of a `[mmu_led_effect]` to play when the staged spool reaches 80% of its pending timeout. NFC does not pass HH `DURATION`; the effect must remain interruptible when preload starts. |
 | `shared_auto_create_effect` | `mmu_RFID_creating` | Name of a `[mmu_led_effect]` to play while Spoolman auto-create is running. |
 | `shared_missed_limit` | `3` | Consecutive unresolvable reads before a console error advises `MMU_PRELOAD`. Minimum 1. |
 | `force_spool_id` | `true` | Show a blocking-style `[ERROR]` advisory when no spool is staged. |
 
 `mmu_gate` and `scan_enabled` are set internally - do not add them. Only one enabled shared reader may be configured. All Spoolman connection settings and logging settings are inherited from the base `[nfc_gate]` section.
+
+`MMU_SET_LED DURATION=` is used carefully. In Happy Hare, passing `DURATION` sets a per-unit pending-update flag; while that flag is active, later LED effect calls for the same unit are ignored until the timer restores the default LEDs. Because of that, normal shared read, staged-ready, and pending-warning feedback do **not** pass `DURATION`; they must remain interruptible by ready, unresolved, warning, preload start, loaded, cancel, replace, and timeout transitions. Duration is kept for standalone effects such as `NFC_SHARED LED_TEST=1`, unresolved feedback, and bypass-ready confirmation.
+
+The normal shared read effect still has a failsafe. NFC arms a local timer using
+`read_effect_duration`; if no ready, unresolved, warning, removal, stop, or
+timeout path takes over, NFC releases the LEDs back to Happy Hare with
+`MMU_GATE_MAP QUIET=1`.
 
 ---
 
@@ -193,6 +198,8 @@ variable_user_post_preload_extension: '_NFC_SHARED_PRELOAD'
 ```
 
 `variable_user_post_preload_extension` fires at the start of every pregate load. `PRELOAD_CHECK` is safe to leave wired for all loads; it skips only while printing, and emits an advisory message when no spool is staged.
+
+Do not leave this hook set to `NFC JOG_SCAN=1` when the shared reader is active. That is the per-lane scan-jog hook; Happy Hare may append the loaded gate number to it, which can produce `NFC GATE=<n>` errors and prevent `NFC_SHARED PRELOAD_COMMIT=1` from clearing the staged spool.
 
 Shared polling pauses automatically when printing starts (`idle_timeout:printing`) and resumes when printing completes (`idle_timeout:ready`). No post-unload hook is needed.
 
@@ -231,6 +238,7 @@ Set `shared_tag_read_effect: mmu_RFID_read`, `shared_spool_ready_effect: mmu_RFI
 | `NFC_SHARED HELP=1` | Show shared reader command help. |
 | `NFC_SHARED CANCEL=1` | Cancel a staged spool and stop polling. |
 | `NFC_SHARED REPLACE=1` | Discard a staged spool and start scanning another. |
+| `NFC_SHARED RESET=1` | Clear shared state, restore HH LED control, and restart polling. |
 | `NFC_SHARED LED_TEST=1` | Test the configured shared tag-read LED effect. |
 
 Klipper requires `=1` on shared action flags, so commands like

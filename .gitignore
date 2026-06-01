@@ -186,5 +186,8 @@ VoronBackup_restorefrom_Backup.sh
 # macOS metadata
 .DS_Store
 
+# Local agent/editor settings
+.claude/settings.json
+
 # Local Happy Hare reference files kept only for manual porting notes.
 klippy/extras/HH_code - for porting/

@@ -399,7 +399,6 @@ read_effect_duration:   2.0
 shared_bypass_tag_read_effect: mmu_RFID_bypass_read
 bypass_read_effect_duration:   2.0
 shared_spool_ready_effect: mmu_RFID_ready
-ready_effect_duration:  0.0
 shared_bypass_spool_ready_effect: mmu_RFID_bypass_ready
 bypass_ready_effect_duration: 2.0
 shared_tag_unresolved_effect: mmu_RFID_unresolved
@@ -420,21 +419,26 @@ force_spool_id:         true
 | `pending_spool_id_timeout` | set in `mmu_parameters.cfg` | Seconds a scanned spool remains eligible for the next preload. NFC reads this from Happy Hare's `[mmu]` section at connect time (falls back to 30 s). Set it in `~/printer_data/config/mmu/base/mmu_parameters.cfg`. |
 | `shared_read_timeout` | `120.0` | Seconds polling may run without resolving a valid tag before auto-stopping. No effect when started via `startup_polling` or PRELOAD_CHECK auto-restart. |
 | `shared_tag_read_effect` | `''` | Name of a `[mmu_led_effect]` to play as soon as the shared reader sees a tag. Leave empty to skip tag-detected LED feedback. |
-| `read_effect_duration` | `2.0` | Seconds before NFC stops `shared_tag_read_effect`. Use with the effect's strobe layer to control total animation length. |
+| `read_effect_duration` | `2.0` | HH duration used by `NFC_SHARED LED_TEST=1`. Normal shared scans do not pass this duration to HH; NFC uses it only as a failsafe release window if no follow-up state replaces the read cue. |
 | `shared_bypass_tag_read_effect` | `mmu_RFID_bypass_read` | Name of a `[mmu_led_effect]` to play when a tag is seen while Happy Hare bypass is selected. |
-| `bypass_read_effect_duration` | `2.0` | Seconds before NFC stops `shared_bypass_tag_read_effect`. |
-| `shared_spool_ready_effect` | `''` | Name of a `[mmu_led_effect]` to play when the tag resolves to a Spoolman spool and is ready to load. Leave empty to skip ready LED feedback. |
-| `ready_effect_duration` | `0.0` | Seconds before NFC stops `shared_spool_ready_effect` when it is used as the immediate bypass fallback confirmation. Normal staged-spool ready feedback still runs until preload commit/cancel/timeout. |
+| `bypass_read_effect_duration` | `2.0` | Reserved for standalone bypass-read feedback. Normal bypass reads stay interruptible because bypass-ready feedback is expected to follow. |
+| `shared_spool_ready_effect` | `''` | Name of a `[mmu_led_effect]` to play when the tag resolves to a Spoolman spool and is ready to load. Normal staged-spool ready feedback runs until preload commit, cancel, replace, or pending timeout; NFC then releases HH ownership with `MMU_GATE_MAP QUIET=1`. |
 | `shared_bypass_spool_ready_effect` | `mmu_RFID_bypass_ready` | Name of a `[mmu_led_effect]` to play when a bypass spool resolves. |
 | `bypass_ready_effect_duration` | `2.0` | Seconds before NFC stops `shared_bypass_spool_ready_effect`. |
 | `shared_tag_unresolved_effect` | `''` | Name of a `[mmu_led_effect]` to play when the tag UID does not resolve to a spool. Leave empty to skip unresolved LED feedback. |
 | `unresolved_effect_duration` | `2.0` | Seconds before NFC stops `shared_tag_unresolved_effect`. For example, `layers: strobe 2 2 ...` plus `unresolved_effect_duration: 1.0` plays two flashes and stops after 1 second. |
-| `shared_spool_warning_effect` | `mmu_RFID_warning` | Name of a `[mmu_led_effect]` to play when the staged spool reaches 80% of its pending timeout. |
+| `shared_spool_warning_effect` | `mmu_RFID_warning` | Name of a `[mmu_led_effect]` to play when the staged spool reaches 80% of its pending timeout. NFC does not pass HH `DURATION`; the effect must remain interruptible when preload starts. |
 | `shared_auto_create_effect` | `mmu_RFID_creating` | Name of a `[mmu_led_effect]` to play while Spoolman auto-create is running. |
 | `shared_missed_limit` | `3` | Consecutive unresolvable UID reads before a console error advises the user to use `MMU_PRELOAD`. Minimum 1. |
 | `force_spool_id` | `true` | When `true`, `PRELOAD_CHECK` emits a `[ERROR]` advisory if no spool is staged, telling the user to scan a tag before loading. |
 
 `mmu_gate` and `scan_enabled` are not user-configurable — both are set internally by `shared: true`. Only one enabled shared reader may be configured. The reader inherits `spoolman_url`, `spoolman_rfid_key`, `tag_parsing`, `spoolman_auto_create`, and all logging settings from the base `[nfc_gate]` section. Set `enabled: False` to keep the shared-reader template installed without initializing hardware.
+
+`MMU_SET_LED DURATION=` is intentionally limited to standalone or timeout-bound LED feedback. Happy Hare sets a per-unit pending-update flag while a duration timer is active, and later LED effect calls for that unit are ignored until the timer expires. Normal shared read and staged-ready effects do not pass `DURATION` so follow-up shared-reader states can replace them immediately.
+
+For normal shared reads, `read_effect_duration` still provides a local failsafe:
+if the read LED starts and no follow-up state takes ownership, NFC releases the
+LEDs back to Happy Hare with `MMU_GATE_MAP QUIET=1`.
 
 **Rich tags** work with the shared reader only when they resolve to a real
 Spoolman spool ID. That can happen through an existing UID lookup, an embedded

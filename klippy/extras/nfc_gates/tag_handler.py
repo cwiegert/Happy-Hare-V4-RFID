@@ -14,6 +14,8 @@
 
 import inspect
 
+from .LED_effect_mgr import (
+    EVENT_AUTO_CREATE, EVENT_UNRESOLVED, LEDEffectManager)
 from .gate_state import CurrentTag, DIRECT_METADATA_SPOOL
 from .log import logger
 
@@ -23,32 +25,25 @@ LED_UNRESOLVED    = 'mmu_RFID_unresolved'
 
 def _lane_led_effect(gate, effect_name):
     """Start effect_name on this gate's exit LED (per-gate _exit_N naming)."""
-    gcode = gate.printer.lookup_object('gcode', None)
-    if gcode is None:
+    printer = getattr(gate, 'printer', None)
+    if printer is None:
         return
-    gate_effect = "%s_exit_%d" % (effect_name, gate._gate)
-    try:
-        gcode.run_script(
-            "_MMU_SET_LED_EFFECT EFFECT=%s REPLACE=1" % gate_effect)
-    except Exception as e:
-        if gate._debug >= 3:
-            logger.info("[%s]: LED effect %s skipped: %s",
-                        gate._name, gate_effect, e)
+    result = LEDEffectManager(
+        printer, reactor=getattr(gate, 'reactor', None),
+        name=getattr(gate, '_name', 'nfc')).play_lane_event(
+            _lane_led_event(effect_name), effect_name, gate._gate,
+            replace=True, log_failure=False)
+    if (not result.ok and result.error is not None
+            and getattr(gate, '_debug', 0) >= 3):
+        logger.info("[%s]: LED effect %s skipped: %s",
+                    gate._name, result.effect, result.error)
 
 
-def _lane_led_stop(gate, effect_name):
-    """Stop effect_name on this gate's exit LED."""
-    gcode = gate.printer.lookup_object('gcode', None)
-    if gcode is None:
-        return
-    gate_effect = "%s_exit_%d" % (effect_name, gate._gate)
-    try:
-        gcode.run_script(
-            "_MMU_SET_LED_EFFECT EFFECT=%s STOP=1" % gate_effect)
-    except Exception as e:
-        if gate._debug >= 3:
-            logger.info("[%s]: LED stop %s skipped: %s",
-                        gate._name, gate_effect, e)
+
+def _lane_led_event(effect_name):
+    if effect_name == LED_AUTO_CREATING:
+        return EVENT_AUTO_CREATE
+    return EVENT_UNRESOLVED
 
 
 # ── NTAG / NDEF helpers ───────────────────────────────────────────────────────
@@ -769,17 +764,7 @@ def resolve_spool(gate, uid_hex):
                 else:
                     _lane_led_effect(gate,
                         getattr(gate, '_lane_auto_create_effect', LED_AUTO_CREATING))
-                try:
-                    new_spool_id = lb.auto_create_spool(meta, uid_hex=None)
-                finally:
-                    if getattr(gate, '_shared', False):
-                        stop_creating = getattr(
-                            gate, '_shared_stop_auto_create_effect', None)
-                        if stop_creating is not None:
-                            stop_creating()
-                    else:
-                        _lane_led_stop(gate,
-                            getattr(gate, '_lane_auto_create_effect', LED_AUTO_CREATING))
+                new_spool_id = lb.auto_create_spool(meta, uid_hex=None)
                 if new_spool_id is not None:
                     new_spool_id = int(new_spool_id)
                     if gate._debug >= 3:

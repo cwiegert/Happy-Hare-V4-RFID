@@ -58,6 +58,8 @@ These apply to both per-lane readers and the shared reader.
 | Manual polling start | `NFC[<name>]: polling started` | Per-lane: `INFO     nfc_gate: [<name>] gate <n> READ=1 — polling started`. Shared: see shared table. |
 | Manual polling stop | `NFC[<name>]: polling stop requested` | Per-lane: `INFO     nfc_gate: [<name>] gate <n> READ=0 — polling stopped`. Shared: see shared table. |
 | One manual poll complete | `NFC[<name>]: one poll complete; <status>` | Per-lane: `INFO     nfc_gate: [<name>] one poll complete; <status>`. Shared: see shared table. |
+| Per-lane LED test started | `[OK] NFC[<name>]: lane LED test started (<effect>_exit_<gate> cycles=<count>)` | `INFO     nfc_gate: [<name>] lane LED test started effect=<effect>_exit_<gate> cycles=<count>` |
+| All-lanes LED chase scheduled | `[OK] NFC: lane LED chase test scheduled for gates <list> (delay=<seconds>s cycles=<count>)` | `INFO     NFC_LED_TEST ALL=1 — scheduled=<list> delay=<seconds>s cycles=<count>` |
 | Status command | Per-lane `NFC GATE=<#> STATUS`, global `NFC_STATUS`, shared `NFC_SHARED STATUS=1`, and `SUMMARY=1` print status text. | Console command output only |
 | Help command | `NFC_HELP`, `NFC GATE=<#> HELP`, `NFC_SHARED HELP=1`, or low-level debug help prints command help. | Console command output only |
 | UID registered to existing spool | `[OK] NFC: UID <uid> assigned to Spoolman spool <spool>; NFC cache cleared. Happy Hare/Fluidd will refresh on their normal Spoolman polling cycle.` | `INFO     NFC_Register: UID <uid> assigned to Spoolman spool <spool>` |
@@ -154,7 +156,7 @@ Shared reader messages are specific to `[nfc_gate shared]` and `NFC_SHARED`.
 | Different tag while pending | `[WARN] NFC[shared]: spool <pending> is already pending; read spool <new> uid=<uid> ignored. Run NFC_SHARED REPLACE=1 to discard the pending spool and scan another` | `WARNING  nfc_gate: [shared] shared tag ignored — pending spool=<pending>, new spool=<new> uid=<uid>; use NFC_SHARED REPLACE=1 to replace` |
 | Rich tag has no spool ID after limit | `[ERROR] NFC[shared]: uid=<uid> not in Spoolman after <n> attempts` followed by `NFC[shared]: reader ready for next tag`; counter and state reset, polling continues | `ERROR    nfc_gate: [shared] uid=<uid> not in Spoolman after <n> attempts` and `INFO     nfc_gate: [shared] reader ready for next tag` |
 | UID not found after limit | `[ERROR] NFC[shared]: uid=<uid> not in Spoolman after <n> attempts` followed by `NFC[shared]: reader ready for next tag`; counter and state reset, polling continues | `ERROR    nfc_gate: [shared] uid=<uid> not in Spoolman after <n> attempts` and `INFO     nfc_gate: [shared] reader ready for next tag` |
-| Pending spool at 80% timeout | `[WARN] NFC[shared]: spool <spool> staged — load into gate soon or tap tag again` | `WARNING  nfc_gate: NFC[shared]: spool <spool> staged — load into gate soon or tap tag again (<seconds>s remaining)` |
+| Pending spool at 80% timeout | `[WARN] NFC[shared]: spool <spool> staged — load into gate soon or tap tag again (<seconds>s remaining)` | `WARNING  nfc_gate: [WARN] NFC[shared]: spool <spool> staged — load into gate soon or tap tag again (<seconds>s remaining)` |
 | Pending timeout (no resume) | `[ERROR] NFC[shared]: timeout after <seconds>s — no spool was loaded. Tap tag to stage again.` | `ERROR    nfc_gate: [ERROR] NFC[shared]: timeout after <seconds>s — no spool was loaded. Tap tag to stage again.` |
 | Pending timeout (polling resumed) | `[ERROR] NFC[shared]: timeout after <seconds>s — no spool was loaded. Reader polling resumed. Tap tag to stage again.` | `ERROR    nfc_gate: [ERROR] NFC[shared]: timeout after <seconds>s — no spool was loaded. Reader polling resumed. Tap tag to stage again.` |
 | `PRELOAD_CHECK` while printing | `[WARN] NFC[shared]: PRELOAD_CHECK skipped while printing; pending spool kept` | `INFO     nfc_gate: [shared] PRELOAD_CHECK skipped — printing` |
@@ -173,6 +175,7 @@ Shared reader messages are specific to `[nfc_gate shared]` and `NFC_SHARED`.
 | `REPLACE` while printing | `[WARN] NFC[shared]: shared polling not started while printing` | `WARNING  nfc_gate: [shared] shared REPLACE refused — printing` |
 | `REPLACE` with pending spool | `NFC[shared]: discarded pending spool <spool>; polling restarted` | `INFO     nfc_gate: [shared] shared REPLACE — discarded spool=<spool>; polling restarted with <seconds>s read timeout` |
 | `REPLACE` with no pending spool | `NFC[shared]: no pending spool to replace; polling started` | `INFO     nfc_gate: [shared] shared REPLACE — discarded spool=None; polling restarted with <seconds>s read timeout` |
+| `RESET=1` | `NFC[shared]: shared reset; LEDs restored and polling restarted` | `INFO     nfc_gate: [shared] shared RESET=1 — cleared spool=<spool>; polling restarted with <seconds>s read timeout` |
 | `POLL=1` completes | `NFC[shared]: one poll complete; <status>` | `INFO     nfc_gate: [shared] shared POLL=1 complete — <status>` |
 | `CANCEL` | `NFC[shared]: pending spool canceled` | `INFO     nfc_gate: [shared] pending spool canceled` |
 | `CLEAR=1` | `NFC[shared]: shared state cleared` | `INFO     nfc_gate: [shared] shared state cleared` |

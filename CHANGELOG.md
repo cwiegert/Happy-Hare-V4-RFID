@@ -5,6 +5,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.9.24] - 05/27/2026 - WoodWorker
+
+### Shared Reader LED Target Guard
+
+- Fixed shared-reader legacy LED gate targeting so an MCU-derived index outside Happy Hare's configured gate range no longer sends `MMU_SET_LED GATE=<invalid>`. NFC now falls back to whole-unit LED control for that effect, preventing HH errors such as `The value '4' is not valid for GATE`.
+- Documented the fallback in `nfc_reader_shared.cfg` and the shared-reader design notes.
+- Added stronger shared-reader hook diagnostics. `NFC_DOCTOR`, startup warnings, and shared pending timeouts now call out when `mmu_macro_vars.cfg` is still wired to the per-lane `NFC JOG_SCAN=1` hook instead of `_NFC_SHARED_PRELOAD`.
+- Updated shared-reader docs and config comments so the Happy Hare hook is consistently documented as `variable_user_post_preload_extension: '_NFC_SHARED_PRELOAD'`.
+- Restored the shared pending-spool 80% warning as an explicit Klipper console message while keeping the matching entry in `nfc_reader.log`.
+- Made the shared 80% pending warning fire from the main poll timer as well as the warning timer, and changed the warning LED effect to avoid HH `DURATION` blocking. `_NFC_SHARED_PRELOAD` now releases warning LED feedback as soon as preload validation begins.
+
+---
+
+## [0.9.23] - 05/26/2026 - WoodWorker
+
+### Shared Reader LED Duration Contract
+
+- Changed normal shared-reader read and staged-ready LED feedback so NFC calls `MMU_SET_LED UNIT=0 EXIT_EFFECT=<effect>` without `DURATION`. These effects must remain interruptible by the next shared-reader state, such as ready, unresolved, warning, loaded, cancel, replace, or timeout.
+- Added a local shared-read LED failsafe. If a normal shared read effect starts and no follow-up state takes LED ownership, NFC releases back to Happy Hare with `MMU_GATE_MAP QUIET=1` after `read_effect_duration`.
+- Added HH-control restoration on shared read timeout, manual `NFC_SHARED READ=0`, reader failure, disconnect, and print-start polling suspension when no spool is pending.
+- Added `NFC_SHARED RESET=1` as a recovery command that clears pending/read/preload shared state, restores HH LED ownership, and restarts shared polling.
+- Kept HH `DURATION` only for standalone shared LED feedback: `NFC_SHARED LED_TEST=1`, unresolved feedback, and bypass-ready confirmation. Pending-warning feedback is interruptible so Happy Hare can take LEDs back when preload starts.
+- Documented the Happy Hare `MMU_SET_LED DURATION=` behavior: when `DURATION` is passed, HH sets `pending_update[unit] = True`; while that timer is active, later LED effect requests for the same unit are ignored by `_set_led()`.
+- Removed stale `ready_effect_duration` documentation for the normal staged-ready path. Staged-ready feedback now follows the shared-reader lifecycle and releases with `MMU_GATE_MAP QUIET=1` on preload commit, cancel, replace, or pending timeout.
+- Updated shared-reader tests to assert the interruptible versus timeout-bound LED behavior.
+
+### Repo Hygiene
+
+- Stopped tracking `.claude/settings.json` and added it to `.gitignore` so local agent/editor settings do not appear in repo changes.
+
+---
+
 ## [0.9.22] - 05/24/2026 - WoodWorker
 
 ### Spoolman UID Registration
@@ -15,6 +47,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Stopped reading the Spoolman PATCH response body after UID registration. Spoolman applies the RFID field update before the body is needed, and waiting for a slow/kept-open body can freeze Klipper's reactor after the UID has already been saved.
 - Added command help, README, message documentation, and regression coverage for successful registration and missing-spool rejection.
 - Fixed `NFC_REGISTER` help/error rendering so the command appears with the same uppercase styling as other commands, avoids console-swallowed angle-bracket placeholders, and emits command errors once while still writing them to `nfc_reader.log`.
+
+### Lane LED Test Commands
+
+- Added `NFC GATE=<n> LED_TEST=1` to test the configured per-lane tag-read effect on one gate.
+- Added `NFC_LED_TEST ALL=1` to test the configured per-lane tag-read effect on every enabled lane reader, with a default 0.20 s chase delay between gates.
+- Added `LED_effect_mgr.py` as the NFC/Happy Hare LED contract boundary. Lane scan-jog, shared-reader feedback, and LED test commands now route LED effect naming, public `MMU_SET_LED` effect calls, and HH release requests through the shared manager.
+- Completed the LED contract layer with semantic event helpers (`scan_start`, `tag_read`, `rewind`, `spool_ready`, `unresolved`, `auto_create`, `warning`, and `led_test`) and moved lane LED test cycle scheduling into `LED_effect_mgr.py`.
+- Fixed `NFC GATE=<n> LED_TEST=1` so the lane LED test dispatches through Klipper's async callback path instead of running nested GCode from inside the command handler.
+- Added `CYCLES=<count>` to per-gate and all-lane LED tests. The default is `2`, and each cycle starts the configured base effect with `MMU_SET_LED GATE=<n> EXIT_EFFECT=<effect>`; NFC no longer sends a default-effect restore between cycles and ends the sequence with `MMU_GATE_MAP QUIET=1`.
+- Updated command help, README, message docs, and tests for the new LED test commands.
 
 ---
 

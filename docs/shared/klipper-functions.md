@@ -15,10 +15,12 @@ For shared reader console and `nfc_reader.log` messages, see [Message Definition
 | `NFC_HELP` | Show global NFC command help; add `ADVANCED=1 CALLBACKS=1 LOW_LEVEL=1` for the full command set |
 | `NFC_STATUS` | Show current state of every configured gate (includes shared reader if configured) |
 | `NFC_DOCTOR` | Check common config/setup problems: disabled lanes, Spoolman, shared-reader hook, and static warnings |
-| `NFC_REGISTER UID=HEX_UID SPOOL_ID=SPOOL_ID` | Assign a known NFC UID to an existing Spoolman spool and clear NFC's lookup cache |
+| `NFC_REGISTER UID=TAG_UID SPOOL_ID=SPOOL_ID` | Assign a known NFC UID to an existing Spoolman spool and clear NFC's lookup cache |
+| `NFC_LED_TEST ALL=1` | Test lane tag-read LEDs across every enabled per-lane reader with a short chase delay |
 | `NFC GATE=<#> STATUS` | Show one gate's state |
 | `NFC GATE=<#> INIT=1` | Initialize (or re-initialize) the PN532 reader |
 | `NFC GATE=<#> SCAN=1` | One raw read — shows UID, no Spoolman lookup |
+| `NFC GATE=<#> LED_TEST=1` | Test the configured lane tag-read LED effect on one gate |
 | `NFC GATE=<#> JOG_SCAN=1` | Start scan-jog sequence (same as automatic pre-load trigger) |
 | `NFC GATE=<#> POLL=1` | Full cycle: read → Spoolman → Happy Hare |
 | `NFC GATE=<#> APPLY=1` | Force cached spool assignment to Happy Hare |
@@ -35,6 +37,7 @@ For shared reader console and `nfc_reader.log` messages, see [Message Definition
 | `NFC_SHARED HELP=1` | Show shared reader command help |
 | `NFC_SHARED CANCEL=1` | Cancel a staged shared spool and stop polling |
 | `NFC_SHARED REPLACE=1` | Discard a staged spool and scan another |
+| `NFC_SHARED RESET=1` | Clear shared state, restore HH LED control, and restart polling |
 | `NFC_SHARED LED_TEST=1` | Test configured shared tag-read LED effect |
 | <span style="color:orange">━━━ **Advanced Shared Reader** — internal/recovery commands, not low-level PN532 debug ━━━</span> | |
 | `NFC_SHARED CLEAR=1` | Clear pending spool, stop polling, reset shared state |
@@ -183,7 +186,7 @@ availability, the shared-reader preload hook, and static config warnings such as
 
 ---
 
-### `NFC_REGISTER UID=HEX_UID SPOOL_ID=SPOOL_ID`
+### `NFC_REGISTER UID=TAG_UID SPOOL_ID=SPOOL_ID`
 
 Writes a known tag UID to an existing Spoolman spool using the configured
 `spoolman_rfid_key` field. This is for cases where you already know the UID
@@ -236,6 +239,34 @@ If this fails, see [Troubleshooting](../i2c-pn532/troubleshooting.md).
 
 ---
 
+### `NFC_LED_TEST ALL=1`
+
+Tests the configured per-lane tag-read LED effect on every enabled lane reader,
+with a short delay between gates so the effect chases across the MMU. This uses
+`scan_tag_read_effect` from `nfc_reader.cfg` and calls Happy Hare with the
+base effect plus `GATE=<gate>`. Each cycle starts the effect, waits about two
+seconds, then starts the next cycle without restoring gate status in between.
+After the final cycle, NFC asks Happy Hare to repaint the gate map so the
+active test effects stop. If `CYCLES` is omitted, the default is `2`.
+
+```gcode
+NFC_LED_TEST ALL=1
+```
+
+The default chase delay is `0.20` seconds and the default cycle count is `2`.
+Override either value if needed:
+
+```gcode
+NFC_LED_TEST ALL=1 DELAY=0.10 CYCLES=3
+```
+
+Expected success:
+```
+[OK] NFC: lane LED chase test scheduled for gates 0, 1, 2, 3, 4 (delay=0.20s cycles=2)
+```
+
+---
+
 ### `NFC GATE=<#> SCAN=1`
 
 Reads the PN532 hardware once and prints the raw tag UID. Does not look up Spoolman and does not update Happy Hare.
@@ -248,6 +279,27 @@ NFC GATE=0 SCAN=1
 - Getting a UID to register in Spoolman
 - Confirming a reader can physically see a tag
 - Checking whether a wiring or mode problem is fixed
+
+---
+
+### `NFC GATE=<#> LED_TEST=1`
+
+Tests the configured tag-read LED effect for one lane reader. If `CYCLES` is
+omitted, the default is `2`.
+
+```gcode
+NFC GATE=0 LED_TEST=1 CYCLES=2
+```
+
+With the default `scan_tag_read_effect: mmu_RFID_read`, NFC starts the effect
+once per cycle, waits about two seconds, then starts the next cycle. After the
+last cycle it asks Happy Hare to repaint the gate map so the active test effect
+stops.
+
+```gcode
+MMU_SET_LED GATE=0 EXIT_EFFECT=mmu_RFID_read
+MMU_GATE_MAP QUIET=1
+```
 
 ---
 
@@ -648,7 +700,9 @@ shared: error  tag uid=ABCDEF not in Spoolman
 
 **`NFC_SHARED REPLACE=1`** — Discard the staged spool and start a new timed scan. Use this when you tapped the wrong spool tag.
 
-**`NFC_SHARED LED_TEST=1`** — Play the configured `shared_tag_read_effect` without scanning a tag. Use this during setup to confirm the HH LED effect exists and works.
+**`NFC_SHARED RESET=1`** — Recovery command that clears pending/read/preload state, restores HH LED control with `MMU_GATE_MAP QUIET=1`, and restarts shared polling. Rejected while printing or while the reader is failed.
+
+**`NFC_SHARED LED_TEST=1`** — Play the configured `shared_tag_read_effect` without scanning a tag, using `read_effect_duration` as the HH duration. Use this during setup to confirm the HH LED effect exists and works.
 
 ### Advanced Shared Reader Commands
 

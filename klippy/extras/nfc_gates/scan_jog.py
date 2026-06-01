@@ -3,6 +3,8 @@
 # Scan-and-jog mode helpers for NFCGate.
 
 from . import hh_status
+from .LED_effect_mgr import (
+    EVENT_REWIND, EVENT_SCAN_START, EVENT_TAG_READ, LEDEffectManager)
 from .gate_state import DIRECT_METADATA_SPOOL
 from .log import info_both, logger
 
@@ -43,16 +45,24 @@ def _led_effect(gate, effect_name):
     """
     if not effect_name:
         return
-    gcode = gate.printer.lookup_object('gcode', None)
-    if gcode is None:
-        return
-    gate_effect = "%s_exit_%d" % (effect_name, gate._gate)
-    logger.info("[%s]: LED effect %s", gate._name, gate_effect)
-    try:
-        gcode.run_script("_MMU_SET_LED_EFFECT EFFECT=%s REPLACE=1" % gate_effect)
-    except Exception as e:
-        logger.warning("[%s]: LED effect %s failed: %s", gate._name, gate_effect, e)
-        gate._console("[WARN] NFC[%s]: LED effect failed — %s" % (gate._name, e))
+    led = LEDEffectManager(
+        gate.printer, reactor=gate.reactor, name=gate._name,
+        console=getattr(gate, '_console', None))
+    result = led.play_lane_event(
+        _scan_led_event(effect_name), effect_name, gate._gate, replace=True)
+    if not result.ok and result.error is not None:
+        gate._console("[WARN] NFC[%s]: LED effect failed — %s"
+                      % (gate._name, result.error))
+
+
+def _scan_led_event(effect_name):
+    if effect_name == LED_SEARCHING:
+        return EVENT_SCAN_START
+    if effect_name == LED_TAG_READ:
+        return EVENT_TAG_READ
+    if effect_name == LED_REWINDING:
+        return EVENT_REWIND
+    return EVENT_SCAN_START
 
 
 def _led_reassert_callback(gate, eventtime):
@@ -87,13 +97,8 @@ def _cancel_led_reassert(gate):
 def _led_release(gate):
     """Return LED control to Happy Hare."""
     _cancel_led_reassert(gate)
-    gcode = gate.printer.lookup_object('gcode', None)
-    if gcode is None:
-        return
-    try:
-        gcode.run_script("MMU_GATE_MAP QUIET=1")
-    except Exception as e:
-        logger.warning("[%s]: LED release failed: %s", gate._name, e)
+    led = LEDEffectManager(gate.printer, reactor=gate.reactor, name=gate._name)
+    led.release()
 
 
 

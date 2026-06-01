@@ -102,6 +102,7 @@ class SharedPreloadCoordinator:
                 gate._name, expected_spool, spool_id)
             return
 
+        gate._shared_clear_pending_warning_feedback()
         logger.info(
             "[%s]: PRELOAD_CHECK — staging NEXT_SPOOLID=%d "
             "uid=%s auto_created=%s",

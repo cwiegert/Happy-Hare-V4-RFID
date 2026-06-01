@@ -183,6 +183,8 @@ variable_user_post_preload_extension: '_NFC_SHARED_PRELOAD'
 
 Without this, NFC never sees the preload event and the spool ID is never applied to the gate.
 
+If this value is still set to `NFC JOG_SCAN=1`, the printer is using the per-lane reader hook. Shared-reader loads will stage a spool, but the post-preload commit will not run; the pending spool will eventually time out and you may see `NFC GATE=<n>` errors.
+
 **Set the pending timeout.** Open `~/printer_data/config/mmu/base/mmu_parameters.cfg` and set:
 
 ```ini
