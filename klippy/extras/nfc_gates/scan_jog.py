@@ -151,7 +151,7 @@ def manual_jog_scan(gate, gcmd):
            " (max=%.0fmm  poll=%.2fs)"
            % (gate._name, gate._gate,
               gate._scan_max_mm, gate._scan_poll_interval))
-    logger.warning(msg)
+    logger.info(msg)
     gcmd.respond_info(_color_tags(msg))
 
 
@@ -638,7 +638,7 @@ def restore_left_neighbor(gate):
         return
     msg = ("[REWIND] NFC[Lane%d]: parking at gate sensor"
            % left_gate)
-    logger.warning(msg)
+    logger.info(msg)
     try:
         gcode.run_script("MMU_SELECT GATE=%d" % left_gate)
         gate._console(msg)
@@ -985,20 +985,20 @@ def finish(gate):
     gate._state.miss_count = 0
     _led_effect(gate, getattr(gate, '_scan_tag_read_effect', LED_TAG_READ))
     found_msg = "[OK] NFC[%s]: tag found" % gate._name.capitalize()
-    logger.warning(found_msg)
+    logger.info(found_msg)
     gate._console(found_msg)
     # reactor.pause() yields via greenlet — other reactor timers (including the LED
     # update timer) keep firing, so the tag-read flash plays in full before rewind.
     gate.reactor.pause(gate.reactor.monotonic() + 1.0)
     msg = _rewind_message(gate, "[REWIND]")
-    logger.warning(msg)
+    logger.info(msg)
     gate._console(msg)
     # Rewind LED fires before _run_rewind() so it shows during the entire move.
     _led_effect(gate, getattr(gate, '_scan_rewind_effect', LED_REWINDING))
     gate._run_rewind()
     # _led_release() is called at the end of finish() after all work is done.
     msg = _rewind_complete_message(gate)
-    logger.warning(msg)
+    logger.info(msg)
     gate._console(msg)
     restore_left_neighbor(gate)
     gate.__class__._active_scan_gate = None
@@ -1022,11 +1022,11 @@ def finish(gate):
             gate._state.miss_count = 0
         if event_type == 'changed' and spool is not None:
             msg = "[OK] NFC[%s]: spool %s assigned" % (gate._name.capitalize(), spool)
-            logger.warning(msg)
+            logger.info(msg)
             gate._console(msg)
         elif event_type == 'changed' and meta is not None:
             msg = "[OK] NFC[%s]: tag metadata assigned" % gate._name.capitalize()
-            logger.warning(msg)
+            logger.info(msg)
             gate._console(msg)
         elif event_type == 'uid_only':
             msg = "[WARN] NFC[%s]: tag has no Spoolman match" % gate._name.capitalize()
@@ -1050,13 +1050,13 @@ def rewind_and_exit(gate):
     _cancel_led_reassert(gate)
     gate._scan_mode = False
     gate._state.miss_count = 0
-    msg = _rewind_message(gate, "[WARN]", prefix="no tag found; ")
-    logger.warning(msg)
+    msg = _rewind_message(gate, "[REWIND]", prefix="no tag found; ")
+    logger.info(msg)
     gate._console(msg)
     _led_effect(gate, getattr(gate, '_scan_rewind_effect', LED_REWINDING))
     gate._run_rewind()
     msg = _rewind_complete_message(gate)
-    logger.warning(msg)
+    logger.info(msg)
     gate._console(msg)
     restore_left_neighbor(gate)
     clear_unresolved_scan(gate)
