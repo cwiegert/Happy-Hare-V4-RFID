@@ -57,6 +57,8 @@ NCI_STATUS_DISCOVERY_TARGET_ACTIVATION_FAILED = 0xA1
 NCI_STATUS_DISCOVERY_TEAR_DOWN = 0xA2
 
 MIFARE_CMD_READ = 0x30
+MIFARE_CMD_AUTH_A = 0x60
+MIFARE_CMD_AUTH_B = 0x61
 
 ISO15693_CMD_READ_SINGLE_BLOCK = 0x20
 ISO15693_CMD_READ_MULTIPLE_BLOCKS = 0x23
@@ -489,6 +491,90 @@ class PN7160Handler:
                     self._pause(self.ntag_retry_delay)
         raise PN7160Error("NTAG page %d failed after %d attempts: %s"
                           % (page, attempts, last_error))
+
+    def mifare_authenticate(self, block_addr, key, uid_bytes,
+                            use_key_b=False, timeout=0.500):
+        """Authenticate a MIFARE Classic sector on the active TAGCMD session.
+
+        PN7160/NXP-NCI raw MIFARE auth uses the libnfc-nci command layout:
+        AUTH_A/B, block, UID[4], key[6].  PN532 uses key-before-UID, so do not
+        share the PN532 command builder here.
+        """
+        uid = list(uid_bytes or [])[:4]
+        key = list(key or [])[:6]
+        if len(uid) != 4:
+            raise PN7160Error("MIFARE auth requires 4-byte UID")
+        if len(key) != 6:
+            raise PN7160Error("MIFARE auth requires 6-byte key")
+        auth_cmd = MIFARE_CMD_AUTH_B if use_key_b else MIFARE_CMD_AUTH_A
+        payload = [auth_cmd, block_addr & 0xff] + uid + key
+        try:
+            rx = self.transceive_data(
+                payload, timeout=timeout,
+                label="MIFARE_AUTH_%02X" % (block_addr & 0xff,))
+        except Exception as e:
+            self._debug(
+                "MIFARE auth block=%d key_%s failed: %s"
+                % (block_addr, 'B' if use_key_b else 'A', e))
+            return False
+        rsp = rx[3:]
+        # NXP's linux_libnfc-nci raw example treats a non-zero transceive
+        # length as success.  Some controllers return no meaningful auth
+        # payload, while a data-frame status byte is useful to log but not part
+        # of the MIFARE Classic memory model.
+        self._debug(
+            "MIFARE auth block=%d key_%s response_len=%d data=%s"
+            % (block_addr, 'B' if use_key_b else 'A', len(rsp), _hex(rsp)))
+        return True
+
+    def mifare_read_block(self, block_addr, timeout=0.500):
+        """Read one 16-byte MIFARE Classic block after sector auth."""
+        rx = self.transceive_data(
+            [MIFARE_CMD_READ, block_addr & 0xff], timeout=timeout,
+            label="MIFARE_READ_%02X" % (block_addr & 0xff,))
+        payload = rx[3:]
+        if len(payload) < 16:
+            raise PN7160Error(
+                "short MIFARE block response block=%d data=%s"
+                % (block_addr, _hex(payload)))
+        data = bytes(payload[:16])
+        self._debug("MIFARE block %d data=%s" % (block_addr, _hex(data)))
+        return data
+
+    def mifare_read_authenticated_blocks(self, sector_keys, sectors,
+                                         uid_bytes=None, timeout=0.500):
+        """Authenticate sectors and read their data blocks.
+
+        Returns the same shape as PN532Driver so tag_handler and the Bambu
+        parser stay reader-agnostic.
+        """
+        blocks = {}
+        auth_failed_sectors = []
+        read_failed_blocks = []
+        for sector in sectors:
+            trailer = sector * 4 + 3
+            key = sector_keys[sector] if sector < len(sector_keys) else None
+            if key is None:
+                continue
+            if not self.mifare_authenticate(
+                    trailer, key, uid_bytes, timeout=timeout):
+                auth_failed_sectors.append(sector)
+                continue
+            for blk_offset in range(3):
+                block_addr = sector * 4 + blk_offset
+                try:
+                    blocks[block_addr] = self.mifare_read_block(
+                        block_addr, timeout=timeout)
+                except Exception as e:
+                    read_failed_blocks.append(block_addr)
+                    self._debug("MIFARE block %d read failed: %s"
+                                % (block_addr, e))
+        result = {"uid_bytes": bytes(uid_bytes or []), "blocks": blocks}
+        if auth_failed_sectors:
+            result["auth_failed_sectors"] = auth_failed_sectors
+        if read_failed_blocks:
+            result["read_failed_blocks"] = read_failed_blocks
+        return result
 
     def ntag_read_user_memory(self, start_page=4, end_page=67,
                               timeout=0.100):
@@ -1132,6 +1218,22 @@ class PN7160Driver:
                 batch_size=batch_size, timeout=timeout)
         finally:
             self._release_current_target(reason="iso15693_user_memory_complete")
+
+    def mifare_read_authenticated_blocks(self, sector_keys, sectors,
+                                         uid_bytes=None, timeout=0.500):
+        """Authenticate and read MIFARE Classic blocks like PN532Driver.
+
+        The target must remain active for the whole auth/read sequence because
+        MIFARE Classic authentication state is tied to the current RF session.
+        """
+        try:
+            target_info = self._ensure_active_target()
+            if uid_bytes is None:
+                uid_bytes = target_info.get('uid_bytes') or self.current_uid
+            return self._handler.mifare_read_authenticated_blocks(
+                sector_keys, sectors, uid_bytes=uid_bytes, timeout=timeout)
+        finally:
+            self._release_current_target(reason="mifare_read_complete")
 
     def _target_info_from_tag(self, tag):
         uid_bytes = list(tag.get('uid') or [])
