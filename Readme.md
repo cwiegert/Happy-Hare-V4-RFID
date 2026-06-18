@@ -1,8 +1,31 @@
-# EMU NFC Gate Reader
+# Happy Hare RFID/NFC Reader
 
 NFC spool identification for Happy Hare. Use one NFC reader on each EMU lane, one shared reader inside the MMU body, or both. PN532 remains the default reader; PN7160 is also supported with `reader_type: pn7160`.
 
 This is a system-level Klipper integration, not a plug-and-play appliance. It touches Klipper extras, Happy Hare macros, lane MCU firmware, I2C wiring, Spoolman, and optional LED effects. If you are not comfortable recovering from a Klipper config error, reflashing lane MCUs, and reading logs, expect a learning curve.
+
+## Why This Project Is Different
+
+Most DIY spool RFID/NFC systems put a small controller such as an ESP32 near the
+reader and report tags over WiFi, MQTT, or another side channel. Others wire the
+reader back to the host Raspberry Pi, which often means long SDA/SCL or USB runs
+through the printer.
+
+This project keeps the reader inside the MMU wiring domain. Each NFC reader is
+connected directly to an existing Klipper MCU I2C bus, usually the MMU board or
+the per-lane board inside the MMU. Klipper talks to that MCU, and the plugin
+integrates the result with Happy Hare and Spoolman.
+
+Practical hardware choices:
+
+- **EMU / one board per lane:** per-lane readers are a natural fit. Each lane has
+  its own MCU/I2C bus, so PN532 and PN7160 are both valid choices.
+- **Other B-style multi-material systems with one MMU board:** PN7160 is usually
+  the better choice for multiple readers on one bus because it has four
+  selectable I2C addresses (`40-43` / `0x28-0x2B`). That matches many four-color
+  MMU layouts.
+- **Single shared reader:** PN532 or PN7160 can be mounted inside the MMU body
+  and used as a tap-before-loading reader.
 
 ## Operating Modes
 
