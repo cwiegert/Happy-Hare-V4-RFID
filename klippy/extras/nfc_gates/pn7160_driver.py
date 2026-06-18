@@ -1051,6 +1051,9 @@ class PN7160Driver:
         # Advanced PN7160 tuning options are intentionally hidden from the
         # default config templates.  Users can still override them in a specific
         # [nfc_gate laneN] section during hardware bring-up.
+        raw_log = config.getboolean('raw_log', False)
+        pn7160_debug = config.getboolean('pn7160_debug', False)
+        handler_debug = debug >= 4 or pn7160_debug
         self._handler = PN7160Handler(
             config, i2c,
             ven_pin=config.get('ven_pin', None),
@@ -1061,8 +1064,8 @@ class PN7160Driver:
                 'nci_poll_interval', 0.250, minval=0.0),
             read_timeout=config.getfloat(
                 'read_timeout', 0.500, minval=0.0),
-            raw_log=config.getboolean('raw_log', False),
-            debug=(debug >= 4 or config.getboolean('pn7160_debug', False)),
+            raw_log=raw_log,
+            debug=handler_debug,
             ven_pre_high_time=config.getfloat(
                 'ven_pre_high_time', 0.010, minval=0.0),
             ven_low_time=config.getfloat(
