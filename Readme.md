@@ -42,7 +42,17 @@ The shared reader can stage only a real Spoolman spool ID. UID lookup, embedded 
 - Voron/EMU setup running the [igiannakas IG-dev branch of Happy Hare](https://github.com/igiannakas/Happy-Hare/tree/IG-dev), which provides `variable_user_post_preload_extension`
 - One Klipper MCU per filament lane for per-lane reader installs, or one MCU hosting the shared NFC reader
 - Supported NFC reader hardware configured for I2C
-- I2C bus on the MCU. PN532 should use hardware I2C. PN7160 supports software I2C, but hardware I2C is recommended because software I2C increases MCU load.
+- Hardware I2C bus on the MCU hosting the NFC reader
+- Klipper version requirements:
+  - Strongly recommended: use the latest Klipper on the host and every MCU
+    hosting an NFC reader. The NFC drivers use Klipper's newer low-level
+    `i2c_transfer` / `i2c_bus_status` path so bus errors such as `START_NACK`
+    can be handled on the host side instead of turning reader faults into
+    Klipper shutdowns.
+  - If checking an older install, it should be newer than upstream commit
+    `6bbc9069` (`bus: Note mcu code deprecation if missing i2c_transfer`,
+    Feb 24, 2026 on GitHub).
+  - After updating Klipper, rebuild and flash every MCU hosting an NFC reader.
 - Spoolman reachable from the Pi
 - NFC tags on spools: NTAG213/215/216, MIFARE Classic, or supported rich-tag formats
 - Lane MCU firmware rebuilt from the same Klipper checkout as the host
