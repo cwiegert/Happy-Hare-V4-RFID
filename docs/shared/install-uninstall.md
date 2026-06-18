@@ -1,6 +1,6 @@
 # Install & Uninstall
 
-[← README](../../Readme.md) | [Wiring](../i2c-pn532/wiring.md) | [Setup →](../i2c-pn532/setup.md)
+[← README](../../Readme.md) | [Wiring](../i2c-nfc/wiring.md) | [Setup →](../i2c-nfc/setup.md)
 
 ---
 
@@ -122,7 +122,7 @@ i2c_mcu:  mmu0
 `i2c_mcu` must exactly match the MCU name in your Happy Hare config (from `mmu_hardware.cfg`), typically `mmu0`, `mmu1`, etc. `i2c_bus` can be set once in the base `[nfc_gate]` section or overridden per lane.
 
 > [!IMPORTANT]
-> **Temperature sensor I2C bus must match.** If your lane MCU also has a thermistor or temperature sensor connected over I2C (e.g. an SHT3x), it must be configured on the **same hardware I2C bus** as the NFC reader. Set `i2c_bus` in your temperature sensor section to the same value as the `i2c_bus` in the matching `[nfc_gate laneN]` section (or the base `[nfc_gate]` if all lanes share one bus). Using a different bus, or using the Klipper software-emulated I2C bus (`i2c_software_*`), will cause collisions or read failures on both devices. Hardware I2C is required.
+> **Temperature sensor I2C bus must match.** If your lane MCU also has a thermistor or temperature sensor connected over I2C (e.g. an SHT3x), configure it on the same I2C bus as the NFC reader. PN532 should use hardware I2C. PN7160 supports software I2C, but hardware I2C is recommended because software I2C increases MCU load.
 
 See [Configuration Reference](configuration.md) for all available settings.
 
@@ -147,7 +147,7 @@ NFC gate status  (4 gates configured):
   Gate 3  [lane3]:  empty
 ```
 
-If you see errors, check [Troubleshooting](../i2c-pn532/troubleshooting.md).
+If you see errors, check [Troubleshooting](../i2c-nfc/troubleshooting.md).
 
 ---
 

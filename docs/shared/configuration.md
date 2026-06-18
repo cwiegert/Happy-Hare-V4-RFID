@@ -66,7 +66,7 @@ i2c_speed:   100000
 |---|---|---|
 | `reader_type` | `pn532` | Reader driver to use. Supported values are `pn532` and `pn7160`. |
 | `i2c_address` | `36` for PN532 | I2C address. PN532 uses fixed decimal `36` (`0x24`). PN7160 must use decimal `40-43` (`0x28-0x2B`). |
-| `i2c_bus` | board-specific | Hardware I2C bus name on the selected MCU. Software I2C is not supported. |
+| `i2c_bus` | board-specific | I2C bus name on the selected MCU. PN532 should use hardware I2C. PN7160 supports software I2C, but hardware I2C is recommended because software I2C increases MCU load. |
 | `i2c_speed` | `100000` | I2C speed in Hz. Keep `100000` for PN7160 and for conservative PN532 bring-up. |
 | `i2c_mcu` | per section | Klipper MCU name that hosts the reader. Required in `[nfc_gate laneN]` and `[nfc_gate shared]`. |
 
@@ -252,7 +252,7 @@ These keys in the base `[nfc_gate]` section are inherited by every `[nfc_gate la
 | SLB (PB10/PB11) | `i2c2_PB10_PB11` |
 
 > [!NOTE]
-> The PN532 I2C address is hardwired to `0x24` (decimal `36`). The two pads/jumpers on the breakout board (SEL0/SEL1, sometimes labeled A0/A1) select the **communication protocol** (I2C, SPI, or HSU), not the address. For I2C: SEL0=1, SEL1=0. See the [wiring guide](../i2c-pn532/wiring.md) for the mode selection table.
+> The PN532 I2C address is hardwired to `0x24` (decimal `36`). The two pads/jumpers on the breakout board (SEL0/SEL1, sometimes labeled A0/A1) select the **communication protocol** (I2C, SPI, or HSU), not the address. For I2C: SEL0=1, SEL1=0. See the [PN532 wiring guide](../i2c-nfc/pn532-wiring.md) for the mode selection table.
 
 ---
 

@@ -235,7 +235,7 @@ Expected success:
 NFC[lane0]: reader OK
 ```
 
-If this fails, see [Troubleshooting](../i2c-pn532/troubleshooting.md).
+If this fails, see [Troubleshooting](../i2c-nfc/troubleshooting.md).
 
 ---
 

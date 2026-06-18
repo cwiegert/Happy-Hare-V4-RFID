@@ -19,7 +19,7 @@ The shared reader can stage only a real Spoolman spool ID. UID lookup, embedded 
 - Voron/EMU setup running the [igiannakas IG-dev branch of Happy Hare](https://github.com/igiannakas/Happy-Hare/tree/IG-dev), which provides `variable_user_post_preload_extension`
 - One Klipper MCU per filament lane for per-lane reader installs, or one MCU hosting the shared NFC reader
 - Supported NFC reader hardware configured for I2C
-- Hardware I2C bus on the MCU; software I2C is not supported
+- I2C bus on the MCU. PN532 should use hardware I2C. PN7160 supports software I2C, but hardware I2C is recommended because software I2C increases MCU load.
 - Spoolman reachable from the Pi
 - NFC tags on spools: NTAG213/215/216, MIFARE Classic, or supported rich-tag formats
 - Lane MCU firmware rebuilt from the same Klipper checkout as the host
@@ -35,15 +35,15 @@ Supported readers:
 
 | Guide | Purpose |
 |---|---|
-| [PN532 Wiring](docs/i2c-pn532/wiring.md) | PN532 I2C mode, pin connections, pull-ups, bus notes |
+| [NFC Reader Wiring](docs/i2c-nfc/wiring.md) | PN532 and PN7160 wiring, I2C address, and bus notes |
 | [Install & Uninstall](docs/shared/install-uninstall.md) | Installer behavior, includes, updates, removal |
-| [First-Time Setup](docs/i2c-pn532/setup.md) | Configure Spoolman, lane hardware, first verification |
+| [First-Time Setup](docs/i2c-nfc/setup.md) | Configure Spoolman, lane hardware, first verification |
 | [Shared Reader](docs/shared/shared-reader.md) | Shared-reader workflow, hook wiring, commands, LED behavior |
 | [Configuration Reference](docs/shared/configuration.md) | Every config key, defaults, inheritance rules |
 | [Commands & Macros](docs/shared/klipper-functions.md) | User commands, shared commands, callback macros |
 | [Message Definitions](docs/shared/message_definition.md) | Console output and matching `nfc_reader.log` entries |
 | [Spoolman Integration](docs/shared/spoolman-integration.md) | Extra field setup, UID registration, lookup behavior |
-| [Troubleshooting](docs/i2c-pn532/troubleshooting.md) | Startup errors, PN532 failures, tag lookup issues |
+| [Troubleshooting](docs/i2c-nfc/troubleshooting.md) | Startup errors, reader failures, tag lookup issues |
 | [How It Works](docs/shared/how-it-works.md) | Boot sequence, poll flow, scan-jog, dispatch layers |
 | [Expert I2C Debugging](docs/shared/expert-low-level-i2c-debugging.md) | Low-level PN532 probe commands |
 

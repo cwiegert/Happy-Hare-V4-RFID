@@ -7,7 +7,7 @@
 ## Start Here: MCU Firmware
 
 > [!CAUTION]
-> **The most common source of PN532 failures is stale lane MCU firmware.**
+> **The most common source of NFC reader failures is stale lane MCU firmware.**
 >
 > If you updated the Klipper host but didn't rebuild and flash the EBB42 firmware, the MCU and host are running different protocol versions. I2C failures from this look exactly like hardware problems — bad wiring, wrong mode, broken module.
 >
@@ -76,6 +76,38 @@ Still failing? Go to [Expert: Low-Level I2C Debugging](../shared/expert-low-leve
 
 ---
 
+## PN7160 Not Responding
+
+PN7160 startup problems are usually address, bus, or reset related.
+
+Check in this order:
+
+1. **`reader_type`** - the lane/shared section must set `reader_type: pn7160`.
+2. **`i2c_address`** - must match the hardware address selection and be one of `40`, `41`, `42`, or `43`.
+3. **`i2c_mcu` name** - must match an existing Klipper `[mcu ...]` section.
+4. **SDA/SCL not swapped** - verify the selected bus pins.
+5. **Power and ground** - confirm the module is powered and shares ground with the MCU.
+6. **Bus type** - hardware I2C is recommended. Software I2C is supported, but consumes more MCU time.
+7. **VEN state** - if `ven_pin` is wired, confirm the pin is correct. If VEN is not wired and the chip appears stuck, power-cycle the module.
+
+Then try:
+
+```gcode
+NFC GATE=0 INIT=1
+```
+
+or for the shared reader:
+
+```gcode
+NFC_SHARED INIT=1
+```
+
+If the PN7160 becomes unusually warm after a failed test or forced Klipper stop,
+stop testing and power-cycle it. Wiring `ven_pin` gives Klipper a reliable
+hardware reset path.
+
+---
+
 ### `Unable to obtain 'i2c_read_response' response`
 
 Klipper asked the MCU for an I2C read and got no reply.
@@ -117,7 +149,7 @@ The BME280 (address `0x76`) and PN532 (address `0x24`) share the PB3/PB4 bus wit
 
 ## Tag Detected But No Spool Found
 
-The hardware is working — the PN532 read the tag. The Spoolman lookup failed.
+The hardware is working — the NFC reader read the tag. The Spoolman lookup failed.
 
 ```gcode
 NFC GATE=0 POLL=1
@@ -189,7 +221,7 @@ Common macro issues:
 ```gcode
 NFC_STATUS                    ; all gates — current state
 NFC GATE=0 STATUS         ; one gate
-NFC GATE=0 INIT=1         ; re-initialize the PN532
+NFC GATE=0 INIT=1         ; re-initialize the NFC reader
 NFC GATE=0 SCAN=1         ; one raw read, no state machine or Spoolman
 NFC GATE=0 POLL=1         ; one complete cycle, watch for console output
 ```
