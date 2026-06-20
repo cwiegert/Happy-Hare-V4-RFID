@@ -39,7 +39,7 @@ def _color_tags(text):
 
 
 def _led_effect(gate, effect_name):
-    """Apply effect_name to this gate's LED only (HH _exit_N per-gate naming).
+    """Apply effect_name to this gate's LED only (Happy Hare _exit_N per-gate naming).
 
     Called from reactor timer context — run_script is safe here (no GCode mutex held).
     Must be synchronous so LED state is correct before the next blocking operation.
@@ -76,7 +76,7 @@ def _led_reassert_callback(gate, eventtime):
 
 
 def _schedule_led_reassert(gate, effect_name):
-    """Queue a delayed LED reassert so HH LED updates do not win the race."""
+    """Queue a delayed LED reassert so Happy Hare LED updates do not win the race."""
     if not effect_name:
         return
     gate._scan_led_reassert_effect = effect_name
@@ -236,7 +236,7 @@ def sync_spoolman_before_scan(gate):
     try:
         if gate._debug >= 3:
             logger.info(
-                "[%s]: gate %d scan mode — syncing HH Spoolman "
+                "[%s]: gate %d scan mode — syncing Happy Hare Spoolman "
                 "state before scan-jog",
                 gate._name, gate._gate)
         gcode.run_script("MMU_SPOOLMAN SYNC=1 QUIET=1")
@@ -254,7 +254,7 @@ def clear_hh_gate_cache(gate):
     try:
         if gate._debug >= 3:
             logger.info(
-                "[%s]: gate %d scan mode — clearing HH gate cache "
+                "[%s]: gate %d scan mode — clearing Happy Hare gate cache "
                 "before scan-jog",
                 gate._name, gate._gate)
         gcode.run_script("_NFC_GATE_CLEAR_CACHE GATE=%d" % gate._gate)
@@ -265,12 +265,12 @@ def clear_hh_gate_cache(gate):
 
 
 def run_pending_hh_prep(gate):
-    """Run HH prep once from the scan timer, outside the hook call stack."""
+    """Run Happy Hare prep once from the scan timer, outside the hook call stack."""
     if not getattr(gate, '_scan_hh_prep_pending', False):
         return
     gate._scan_hh_prep_pending = False
-    # HH calls first — both touch MMU_GATE_MAP which resets LED state.
-    # Searching effect fires last, then again shortly after any HH repaint.
+    # Happy Hare calls first — both touch MMU_GATE_MAP which resets LED state.
+    # Searching effect fires last, then again shortly after any Happy Hare repaint.
     clear_hh_gate_cache(gate)
     sync_spoolman_before_scan(gate)
     effect_name = getattr(gate, '_scan_searching_effect', LED_SEARCHING)
@@ -279,7 +279,7 @@ def run_pending_hh_prep(gate):
 
 
 def clear_unresolved_scan(gate):
-    """Clear stale HH metadata when scan-jog ends without a spool id."""
+    """Clear stale Happy Hare metadata when scan-jog ends without a spool id."""
     gcode = gate.printer.lookup_object('gcode', None)
     if gcode is None:
         return
@@ -395,8 +395,8 @@ def stopped_step_event(gate, eventtime):
     if not gate._scan_mode:
         return gate.reactor.NEVER
 
-    # Re-assert searching LED every step after the initial HH prep.
-    # MMU_TEST_MOVE and HH's own LED timer both kill custom effects — this
+    # Re-assert searching LED every step after the initial Happy Hare prep.
+    # MMU_TEST_MOVE and Happy Hare's own LED timer both kill custom effects — this
     # keeps the clockwise animation alive between and after every jog.
     if not getattr(gate, '_scan_hh_prep_pending', True):
         _led_effect(gate, getattr(gate, '_scan_searching_effect', LED_SEARCHING))
@@ -519,8 +519,8 @@ def stopped_step_event(gate, eventtime):
             logger.debug("[%s]: run_script MMU_TEST_MOVE MOVE=%.2f QUIET=1",
                          gate._name.capitalize(), chunk)
         gate._run_jog(chunk)
-        # MMU_TEST_MOVE causes HH to update its LED state. Re-assert now and
-        # once more after HH's own LED refresh has had time to land.
+        # MMU_TEST_MOVE causes Happy Hare to update its LED state. Re-assert now and
+        # once more after Happy Hare's own LED refresh has had time to land.
         effect_name = getattr(gate, '_scan_searching_effect', LED_SEARCHING)
         _led_effect(gate, effect_name)
         _schedule_led_reassert(gate, effect_name)
@@ -729,7 +729,7 @@ def spool_identity_for_gate(gate, target_gate):
         if gate._debug >= 3:
             logger.info(
                 "[%s]: gate %d - left gate %d spool_identity=%s "
-                "suppressed: HH reports gate empty (status=%d)",
+                "suppressed: Happy Hare reports gate empty (status=%d)",
                 gate._name, gate._gate, target_gate, left_identity,
                 left_hh.status)
         return None
@@ -1266,7 +1266,7 @@ def rewind_and_exit(gate):
     if gate._debug >= 3:
         logger.info(
             "[%s]: gate %d scan mode — no tag found, "
-            "NFC state and HH gate cache cleared after rewind",
+            "NFC state and Happy Hare gate cache cleared after rewind",
             gate._name, gate._gate)
     gate._scan_decode_retry_attempts = 0
     gate._scan_decode_retry_uid = None
@@ -1290,7 +1290,7 @@ def console(gate, msg):
     msg_text = str(msg)
     if '[ERROR]' in msg_text:
         msg_level = 40
-    elif '[WARN]' in msg_text:
+    elif '[WARN]' in msg_text or '[SCAN]' in msg_text or '[REWIND]' in msg_text or '[OK]' in msg_text:
         msg_level = 30
     else:
         msg_level = 20
@@ -1355,7 +1355,7 @@ def run_direct_continuous_jog(gate, mm):
             mmu.select_gate(gate._gate)
             gate._scan_gate_selected = True
 
-        # Keep the gear rail under HH ownership and in the same sync mode used
+        # Keep the gear rail under Happy Hare ownership and in the same sync mode used
         # by MMU_TEST_MOVE MOTOR=gear, but avoid the gcode/logging wrapper.
         gear_only = getattr(mmu_toolhead, 'GEAR_ONLY')
         mmu_toolhead.sync(gear_only)
