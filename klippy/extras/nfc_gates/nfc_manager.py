@@ -899,7 +899,7 @@ class NFCGate:
         self._hh_confirmed_spool = None  # last spool Happy Hare acknowledged; enables _check_hh_cleared
         self._hh_load_paused     = False  # True while Happy Hare owns this gate assignment
         self._failed     = False
-        self._klipper    = KlipperInterface(self.printer, self.reactor, self._debug)
+        self._klipper    = KlipperInterface(self.printer, self.reactor, self._debug, name=self._name)
         self._polling    = False
         self._poll_timer    = self.reactor.register_timer(self._poll_timer_event)
         self._warning_timer = self.reactor.register_timer(
