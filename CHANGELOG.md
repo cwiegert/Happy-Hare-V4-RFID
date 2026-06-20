@@ -7,6 +7,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased] - Continuous Scan - WoodWorker
 
+### Console Output and Logging
+
+- Replaced all abbreviated `HH` references with `Happy Hare` across log strings, console messages, docstrings, and user-visible status text in `nfc_manager.py`, `scan_jog.py`, `shared_preload.py`, and `hh_status.py`. `HH_SYNC` macro/command names and the `HH:MM:SS` datetime format in `log.py` are unchanged.
+- Changed `[SCAN]`, `[REWIND]`, and `[OK]` tagged scan-jog messages to appear at `console_log_level: 2`, matching the warning threshold. Previously all scan-jog messages required level 3. Verbose detail lines with no tag (move-queued timing, LED state changes) still require level 3.
+- Changed the debug log for continuous jog moves from logging the equivalent `MMU_TEST_MOVE` macro string to `jogging filament Xmm at Ymm/s accel=Zmm/s^2 (path=direct|gcode)`. The log now fires after the call so `move_path` reflects what was actually executed.
+
+### Macro Naming Consistency
+
+- The configured lane name (e.g. `lane0` from `[nfc_gate lane0]` in `nfc_reader_hw.cfg`) is now forwarded to all three NFC event macros as a `READER=` parameter. `_NFC_SPOOL_CHANGED`, `_NFC_SPOOL_REMOVED`, and `_NFC_TAG_NO_SPOOL` use `params.READER | default('Lane' ~ gate)` so console output reads `NFC[lane0]:` matching the section name in hardware config rather than a hardcoded `NFC gate N:` format.
+- Capitalized `Gate` (capital G) in the remaining user-visible macro output lines — `NFC_HH_SYNC_CACHE` sync progress and `_NFC_SCAN_UNRESOLVED` — to match the capitalization used by `NFC_STATUS`.
+
+### Command Fixes
+
+- Added `NFC GATE=<#> JOG_SCAN=1` to the `NFC_HELP` output. The command existed but was only documented in the per-gate `NFC GATE=<#> HELP=1` listing.
+- Fixed `NFC GATE=<#> HELP=1` incorrectly triggering the low-level PN532 debug path. `low_level_debug_requested()` checks for a `HELP` parameter, so `HELP=1` was intercepted before the per-gate help handler ran, producing spurious `polling paused for low-level PN532 debug` and `low_level_debug is disabled in config` console messages. The HELP check now runs first in `cmd_NFC`.
+- Corrected the help text entry from `NFC GATE=<#> HELP` to `NFC GATE=<#> HELP=1` to match the required Klipper parameter style.
+
 ### Scan-Jog Continuous Mode
 
 - Added opt-in continuous scan-jog mode via `scan_motion_mode: continuous`.
