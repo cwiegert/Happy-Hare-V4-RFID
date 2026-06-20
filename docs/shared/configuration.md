@@ -206,7 +206,7 @@ scan_continuous_poll_interval: 0.05
 | `scan_continuous_step_mm` | `50.0` | Continuous-mode forward search chunk size. The current move is allowed to finish before tag-found completion/rewind runs. |
 | `scan_continuous_speed` | `150.0` | Continuous-mode `MMU_TEST_MOVE SPEED` in mm/s. |
 | `scan_continuous_accel` | `2000.0` | Continuous-mode `MMU_TEST_MOVE ACCEL` in mm/s^2. At `50mm`, `150mm/s`, `2000mm/s^2`, each move takes about `0.408s`. |
-| `scan_continuous_poll_interval` | `0.05` | Delay after a continuous chunk's estimated completion before NFC reads once and either queues the next chunk or finishes the scan. |
+| `scan_continuous_poll_interval` | `0.05` | Delay after a continuous chunk's estimated completion before NFC reads once and either queues the next chunk or finishes the scan. NFC subtracts the time spent inside `MMU_TEST_MOVE WAIT=0` so late-returning Happy Hare moves do not double-wait. |
 
 There is no user setting for left-neighbor interference. During scan-jog, gate
 `N` checks only the cached UID on gate `N - 1`; if it exactly matches the UID

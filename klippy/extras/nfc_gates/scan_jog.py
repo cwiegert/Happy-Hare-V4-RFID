@@ -622,7 +622,11 @@ def continuous_step_event(gate, eventtime):
             "[%s]: run_script MMU_TEST_MOVE MOVE=%.2f SPEED=%.1f ACCEL=%.1f WAIT=0 QUIET=1",
             gate._name.capitalize(), move,
             gate._scan_continuous_speed, gate._scan_continuous_accel)
+    command_start = gate.reactor.monotonic()
     run_continuous_jog(gate, move)
+    command_elapsed = max(0.0, gate.reactor.monotonic() - command_start)
+    expected_duration = continuous_chunk_interval(gate, move)
+    remaining_duration = max(0.0, expected_duration - command_elapsed)
     effect_name = getattr(gate, '_scan_searching_effect', LED_SEARCHING)
     _led_effect(gate, effect_name)
     _schedule_led_reassert(gate, effect_name)
@@ -630,15 +634,16 @@ def continuous_step_event(gate, eventtime):
     gate._scan_continuous_last_move_mm = move
     gate._scan_continuous_move_inflight = True
     gate._scan_continuous_move_complete_time = (
-        gate.reactor.monotonic() + continuous_chunk_interval(gate, move))
+        gate.reactor.monotonic() + remaining_duration)
     gate._scan_next_chunk_time = (
         gate._scan_continuous_move_complete_time
         + gate._scan_continuous_poll_interval)
     logger.info(
         "[%s]: continuous move queued %.1fmm  scan position %.1f / %.1fmm "
-        "(next read in %.2fs)",
+        "(next read in %.2fs; command returned in %.2fs, remaining move %.2fs)",
         gate._name.capitalize(), move, gate._scan_mm_total, gate._scan_max_mm,
-        gate._scan_next_chunk_time - gate.reactor.monotonic())
+        gate._scan_next_chunk_time - gate.reactor.monotonic(),
+        command_elapsed, remaining_duration)
     return gate._scan_next_chunk_time
 
 

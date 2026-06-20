@@ -117,7 +117,7 @@ jog:
 
 ```
 _scan_step_event  (continuous mode)
-  └─ previous WAIT=0 chunk still estimated in flight? → reschedule after completion + gap
+  └─ previous WAIT=0 chunk still estimated in flight? → reschedule after remaining move time + gap
   └─ print started? → rewind and exit
   └─ _poll()
        └─ tag found? → existing _finish_scan()
@@ -126,14 +126,17 @@ _scan_step_event  (continuous mode)
             └─ dispatch cached tag/spool event
   └─ scan limit reached? → rewind and exit
   └─ MMU_SELECT GATE=N + MMU_TEST_MOVE MOVE=50 SPEED=150 ACCEL=2000 WAIT=0
-  └─ reschedule after estimated move completion + scan_continuous_poll_interval
+  └─ reschedule after remaining estimated move time + scan_continuous_poll_interval
 ```
 
 The shipped continuous defaults are 50 mm chunks at 150 mm/s and 2000 mm/s^2,
 with a 0.05 s post-move read gap. That profile spends most of the move at speed:
 about 0.408 s moving plus 0.05 s before the read/check, or roughly 109 mm/s
-effective scan advance. Decode retry moves for incomplete rich tag reads stay on
-the existing stopped/blocking retry path.
+effective scan advance when `MMU_TEST_MOVE WAIT=0` returns promptly. If Happy
+Hare blocks inside the move command, NFC subtracts that elapsed command time
+from the estimated move duration before applying the 0.05 s read gap. Decode
+retry moves for incomplete rich tag reads stay on the existing stopped/blocking
+retry path.
 
 ### Class-level scan lock
 

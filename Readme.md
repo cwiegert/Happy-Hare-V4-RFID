@@ -201,7 +201,7 @@ These are the defaults shipped in `config/nfc_reader.cfg`:
 | `scan_continuous_step_mm` | `50.0` | Continuous-mode forward chunk size |
 | `scan_continuous_speed` | `150.0` | Continuous-mode gear move speed |
 | `scan_continuous_accel` | `2000.0` | Continuous-mode gear move acceleration |
-| `scan_continuous_poll_interval` | `0.05` | Post-chunk read/check gap before queueing the next continuous move |
+| `scan_continuous_poll_interval` | `0.05` | Post-chunk read/check gap before queueing the next continuous move; NFC subtracts the actual `MMU_TEST_MOVE WAIT=0` command-return time from the estimated move duration |
 | `debug` | `2` | Warnings and errors in `nfc_reader.log` |
 | `console_output` | `False` | Keep routine NFC logs out of the console |
 

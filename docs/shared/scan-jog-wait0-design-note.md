@@ -35,7 +35,7 @@ scan_motion_mode: stopped
 # Small non-blocking chunks used only in continuous mode.
 scan_continuous_step_mm: 50.0
 
-# Delay between one estimated move completion and queueing the next move.
+# Delay after the remaining estimated move time before queueing the next move.
 # During this gap, poll the reader once for a tag.
 scan_continuous_poll_interval: 0.05
 
@@ -71,9 +71,12 @@ For a 50 mm move at 150 mm/s with 2000 mm/s^2 acceleration:
 - Average scan advance including the 0.05 s gap: about `109` mm/s
 
 So the spool advances in 50 mm non-blocking chunks, with a short stationary-ish
-gap between chunks. The first implementation should check for a tag during that
-0.05 s gap after each chunk completes, then either queue the next chunk or stop
-the jog flow and let the existing tag handling finish the scan.
+gap between chunks. NFC measures how long `MMU_TEST_MOVE WAIT=0` takes to return
+and subtracts that elapsed command time from the estimated motion duration. If
+Happy Hare returns after most or all of the move has completed, NFC only applies
+the configured check gap instead of double-waiting for another full chunk. The
+scan checks for a tag during that 0.05 s gap, then either queues the next chunk
+or stops the jog flow and lets the existing tag handling finish the scan.
 
 The existing `finish()` path intentionally pauses for about 0.1 second after a
 tag is found so the `scan_tag_read_effect` / read-light effect is visible before
@@ -238,8 +241,12 @@ Expected behavior:
 
 - Scan should move in 50 mm non-blocking gear chunks.
 - Each chunk should take about 0.408 s, then pause/check for about 0.05 s before
-  the next chunk is queued.
-- Effective scan advance should be roughly 109 mm/s with these defaults.
+  the next chunk is queued when `MMU_TEST_MOVE WAIT=0` returns promptly.
+- If Happy Hare returns late from `MMU_TEST_MOVE WAIT=0`, NFC should subtract the
+  command-return time from the estimated chunk duration before applying the
+  0.05 s check gap.
+- Effective scan advance should be roughly 109 mm/s with these defaults when the
+  command returns promptly.
 - If a tag is read during the check window, no more motion is queued and the
   existing tag read actions, 0.1 s read-light hold, rewind, and completion logic
   run.

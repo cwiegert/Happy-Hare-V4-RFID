@@ -18,6 +18,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `scan_continuous_accel`, and `scan_continuous_poll_interval`.
 - Documented the tested continuous profile: 50 mm chunks at 150 mm/s with
   2000 mm/s^2 acceleration and a 0.05 s post-move tag-check gap.
+- Added adaptive continuous timing so NFC subtracts the actual
+  `MMU_TEST_MOVE WAIT=0` command-return time from the estimated move duration,
+  avoiding an extra move-length wait when Happy Hare returns late.
 
 ---
 

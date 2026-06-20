@@ -14,6 +14,10 @@ Branch: `CW-Development`
 - Added trapezoid timing estimation for continuous scan chunks so the next
   read/check is scheduled after the estimated move completion plus the
   configured check gap.
+- Added adaptive continuous timing: NFC measures how long `MMU_TEST_MOVE WAIT=0`
+  actually takes to return and subtracts that elapsed time from the estimated
+  move duration before scheduling the next read. This avoids double-waiting on
+  systems where Happy Hare returns after most or all of the move has completed.
 
 ## Behavior
 
@@ -43,6 +47,8 @@ Estimated motion:
 - Cruise distance: about 38.75 mm
 - Move duration: about 0.408 s
 - Effective scan advance including the 0.05 s check gap: about 109 mm/s
+- If Happy Hare blocks inside `MMU_TEST_MOVE WAIT=0`, NFC subtracts that command
+  time from the estimated move duration before applying the 0.05 s check gap.
 
 ## Files Changed
 
