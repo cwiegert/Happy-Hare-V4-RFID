@@ -109,6 +109,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   current chunk has finished.
 - Documented the tested continuous profile: 50 mm chunks at 150 mm/s with
   2000 mm/s^2 acceleration and a 0.05 s in-flight tag-check cadence.
+- Optimized the baseline continuous scan configuration for optimal speed while
+  minimizing overshoot, balancing chunk pacing and probe cadence to reduce
+  missed tags without introducing extra backtracking.
 - Added direct Happy Hare MMU-toolhead forward jog support for continuous scan,
   with `MMU_TEST_MOVE WAIT=0` retained as a compatibility fallback.
 - Reduced repeated continuous-mode search LED calls by removing the top-of-loop
