@@ -229,8 +229,8 @@ Reader compatibility:
 | Tag capability | PN532 | PN7160 | RC522 | Notes |
 |---|---:|---:|---:|---|
 | UID lookup through Spoolman | Yes | Yes | Yes | Factory UID matching works on all supported readers. |
-| NTAG / Type-2 rich tags | Yes | Yes | No | Used by common NDEF text, JSON, OpenSpool, and several manufacturer tags. |
-| Bambu / MIFARE Classic rich reads | Yes | Yes | No | Requires `tag_parsing: True`, `bambu_reads: True`, and `pycryptodome`. |
+| NTAG / Type-2 rich tags | Yes | Yes | Yes | Used by common NDEF text, JSON, OpenSpool, and several manufacturer tags. |
+| Bambu / MIFARE Classic rich reads | Yes | Yes | Yes | Requires `tag_parsing: True`, `bambu_reads: True`, and `pycryptodome`. |
 | ISO15693 / Type-5 rich tags | No | Yes | No | Used by SLIX2/OpenPrintTag-style Type-5 tags. |
 
 Example OpenSpool-like JSON payload (MIME `application/vnd.openspool` or generic NDEF JSON):

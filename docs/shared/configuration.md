@@ -25,7 +25,7 @@ This includes hardware keys. `i2c_address` and `i2c_bus` set in the base `[nfc_g
 `reader_type` is inherited the same way as other hardware keys. The shipped
 default is `pn532`; set `reader_type: pn7160` in a lane or shared-reader section
 only when that physical reader is PN7160. Set `reader_type: rc522` only for
-UID-only RC522 SPI hardware.
+RC522 SPI hardware.
 
 Example:
 
@@ -121,9 +121,11 @@ spi_bus:     spi1
 # rc522_transceive_delay: 0.035
 ```
 
-RC522 is UID-only. It can resolve tags registered in Spoolman's RFID extra
-field, but it does not read NTAG, MIFARE Classic, Bambu, or ISO15693 rich tag
-metadata.
+RC522 can resolve tags registered in Spoolman's RFID extra field and can read
+NTAG/Type-2 rich metadata through the normal NFC Reader pipeline. It also
+supports authenticated MIFARE Classic/Bambu reads when `tag_parsing: True`,
+`bambu_reads: True`, and `pycryptodome` are available. It does not support
+ISO15693 rich tag metadata.
 
 ---
 

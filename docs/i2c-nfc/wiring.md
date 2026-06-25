@@ -3,8 +3,8 @@
 [README](../../Readme.md) | [Next: Install](../shared/install-uninstall.md)
 
 This project supports two I2C NFC reader families. RC522 is also supported as
-a UID-only SPI reader with `reader_type: rc522`; it does not use the I2C wiring
-or address settings below.
+an SPI reader with `reader_type: rc522`; it does not use the I2C wiring or
+address settings below.
 
 | Reader | `reader_type` | Address | I2C bus | Best use |
 |---|---|---|---|---|

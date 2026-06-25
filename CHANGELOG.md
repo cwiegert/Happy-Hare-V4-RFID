@@ -37,17 +37,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Reader Hardware
 
-- Added RC522 as a supported UID-only SPI reader via `reader_type: rc522`.
+- Added RC522 as a supported SPI reader via `reader_type: rc522`.
   `reader_factory.py` now creates an `RC522Driver` through Klipper's SPI bus
   helper before the I2C reader path. The RC522 driver exposes the current
   reader API (`read_tag(timeout=...)`, `read_target(timeout=...)`, and target
-  cleanup), marks targets as `protocol: uid_only`, and honors short continuous
-  scan probe timeouts. RC522 uses its own optional
-  `rc522_transceive_delay` setting (default `0.035`) instead of inheriting the
-  slower PN532 passive-target delay. Rich tag parsing intentionally falls back
-  to UID-only behavior for RC522 because NTAG/MIFARE memory reads are not
-  implemented.
-- Added RC522 diagnostic logging for the UID-only path. Init failures now log a
+  cleanup), and honors short continuous scan probe timeouts. RC522 uses its own
+  optional `rc522_transceive_delay` setting (default `0.035`) instead of
+  inheriting the slower PN532 passive-target delay.
+- Added RC522 ISO14443A SELECT/cascade support and NTAG/Type-2 page reads.
+  `read_target()` now returns selected target info with SAK/ATQA when SELECT
+  succeeds, including 4-byte, 7-byte, and 10-byte UID cascade handling. The
+  driver exposes `ntag_read_page()`, `ntag_read_user_memory()`, and
+  `ntag_read_ndef_user_memory()` so `tag_handler.py` can run the existing
+  rich-tag metadata resolution path for RC522 Type-2 tags. If SELECT fails
+  after a valid anticollision UID, the reader falls back to the existing
+  UID-only target shape so Spoolman UID lookup still works. ISO15693 remains
+  unsupported on RC522.
+- Added MIFARE Classic authentication and block reads to the RC522 driver.
+  `mifare_authenticate()` uses the RC522 hardware `MFAuthent` (0x0E) command
+  which handles the three-pass challenge/response exchange internally — no
+  over-the-air auth frame is sent by the host like on PN532. After auth,
+  `mifare_read_block()` uses the same `_transceive_crc` path as NTAG page
+  reads; `RxCRCEn` in `ModeReg` strips the two CRC trailer bytes so the FIFO
+  holds only the 16 data bytes. `mifare_read_authenticated_blocks()` matches
+  the PN532 return shape (`{"uid_bytes": …, "blocks": {abs_block: bytes}}`)
+  so `tag_handler.py` and the Bambu parser stay reader-agnostic. The RC522
+  stops on the first auth or read failure (same policy as PN7160) because the
+  hardware crypto state (`MFCrypto1On`) becomes unreliable after a rejected
+  handshake; `_stop_crypto1()` clears `Status2Reg` bit 3 in the `finally`
+  block so subsequent scans are never left in encrypted mode. Bambu refill
+  RFID tags (MIFARE Classic 1K with HKDF-derived sector keys) are now fully
+  supported on RC522.
+- Added RC522 diagnostic logging for the SPI path. Init failures now log a
   warning with SPI wiring/config hints before re-raising, health checks warn
   when the reader does not respond or antenna TX bits are off, and post-REQA
   anticollision/checksum failures produce warning-level summaries with raw
@@ -61,6 +82,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `RC522_TRANSCEIVE='<bytes>' BIT_FRAMING=<0-7>` provide register, antenna,
   FIFO transceive, and tag-wake diagnostics without reusing PN532 ACK/ready
   semantics.
+- Added orchestration-facing RC522 SPI aliases for the same diagnostics:
+  `RC522_REGISTER=<reg> [VALUE=<byte>]`, `RC522_ANTENNA_ENABLE=0|1`,
+  `RC522_TAG_WAKE=1`, and
+  `RC522_FIFO_TRANSCEIVE='<bytes>' BIT_FRAMING=<0-7>`. These run through the
+  `NFC` / `NFC_SHARED` handlers, so shared-reader and per-lane RC522 debugging
+  uses the same NFC Reader command surface as init and scan.
 
 ### Console Output and Logging
 

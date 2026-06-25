@@ -597,9 +597,11 @@ def _nfc_help(gcmd=None):
             "NFC GATE=<#> STEP=SAM_RESPONSE : Read SAMConfiguration response",
             "RC522 SPI/register debug:",
             "NFC_SHARED RC522_DUMP_REGS=1 : Read key RC522 registers",
-            "NFC_SHARED RC522_ANTENNA=1 : Enable RC522 antenna TX bits",
-            "NFC_SHARED RC522_REQA=1 : Run a 7-bit REQA tag-wake probe",
-            "NFC_SHARED RC522_TRANSCEIVE='93 20' BIT_FRAMING=0 : Raw FIFO transceive",
+            "NFC_SHARED RC522_REGISTER=TxControlReg : Read one RC522 register",
+            "NFC_SHARED RC522_REGISTER=TxControlReg VALUE=83 : Write one RC522 register",
+            "NFC_SHARED RC522_ANTENNA_ENABLE=1 : Enable RC522 antenna TX bits",
+            "NFC_SHARED RC522_TAG_WAKE=1 : Run a 7-bit REQA tag-wake probe",
+            "NFC_SHARED RC522_FIFO_TRANSCEIVE='93 20' BIT_FRAMING=0 : Raw FIFO transceive",
         ])
     return lines
 
