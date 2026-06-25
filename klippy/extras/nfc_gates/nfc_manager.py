@@ -2584,6 +2584,36 @@ class NFCGate:
         if not status.gate_statuses:
             return False, "Happy Hare gate status unavailable"
 
+        if self._spoolman is None:
+            unknown_lanes = [
+                lane for lane, gate_state in enumerate(status.gate_statuses)
+                if gate_state == -1
+            ]
+            if unknown_lanes:
+                gcode = self.printer.lookup_object('gcode', None)
+                if gcode is not None:
+                    for lane in unknown_lanes:
+                        script = "MMU_CHECK_GATE GATE=%d" % lane
+                        try:
+                            logger.info(
+                                "[%s]: scan preflight — lane %d "
+                                "gate_status=-1; running %s before jog",
+                                self._name, lane, script)
+                            gcode.run_script(script)
+                        except Exception as e:
+                            logger.warning(
+                                "[%s]: scan preflight — %s failed: %s",
+                                self._name, script, e)
+                    status = hh_status.read_full(
+                        self.printer, self.reactor.monotonic())
+                    if not status.present:
+                        return False, "Happy Hare status unavailable"
+                    if status.filament_pos != hh_status.FILAMENT_POS_UNLOADED:
+                        return False, "filament is not parked (filament_pos=%d)" % (
+                            status.filament_pos,)
+                    if not status.gate_statuses:
+                        return False, "Happy Hare gate status unavailable"
+
         for lane, gate_state in enumerate(status.gate_statuses):
             safe = gate_state in (hh_status.GATE_EMPTY,
                                   hh_status.GATE_AVAILABLE,
