@@ -463,9 +463,12 @@ MMU_GATE_MAP GATE={gate} APPLY=1 QUIET=1
 
 ### `_NFC_TAG_NO_SPOOL`
 
-Called when a tag is detected but no matching spool is found in Spoolman. Parameters: `GATE`, `UID`.
+Called when a tag is detected but cannot be resolved to a spool. Parameters:
+`GATE`, `UID`, and optional `SPOOLMAN_DISABLED`.
 
-Default: prints the unknown UID to the console with instructions to register it.
+Default: with Spoolman enabled, prints the unknown UID with instructions to
+register it. With Spoolman disabled, prints a warning that the tag was read but
+no rich metadata or spool assignment was available.
 
 ---
 

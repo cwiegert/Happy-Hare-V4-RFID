@@ -86,6 +86,8 @@ LANE_LED_TEST_DURATION = 2.0
 LANE_LED_TEST_GAP = 0.15
 LANE_LED_TEST_DEFAULT_CYCLES = 2
 LANE_LED_TEST_MAX_CYCLES = 20
+STARTUP_UNKNOWN_GATE_CHECK_DELAY = 5.0
+STARTUP_UNKNOWN_GATE_CHECK_STAGGER = 1.0
 
 
 def _spoolman_url_enabled(url):
@@ -925,9 +927,13 @@ class NFCGate:
         self._hh_confirmed_spool = None  # last spool Happy Hare acknowledged; enables _check_hh_cleared
         self._hh_load_paused     = False  # True while Happy Hare owns this gate assignment
         self._failed     = False
-        self._klipper    = KlipperInterface(self.printer, self.reactor, self._debug, name=self._name)
+        self._klipper    = KlipperInterface(
+            self.printer, self.reactor, self._debug, name=self._name,
+            spoolman_enabled=self._spoolman is not None)
         self._polling    = False
         self._poll_timer    = self.reactor.register_timer(self._poll_timer_event)
+        self._startup_check_timer = self.reactor.register_timer(
+            self._startup_check_unknown_gate_event)
         self._warning_timer = self.reactor.register_timer(
             self._warning_timer_event)
         self._shared_led_failsafe_timer = self.reactor.register_timer(
@@ -1915,6 +1921,73 @@ class NFCGate:
             self.reactor.monotonic() + 2.0
         )
 
+    def _startup_run_check_gate(self, gate_number, reason):
+        script = "MMU_CHECK_GATE GATE=%d" % gate_number
+        try:
+            logger.info("[%s]: startup check-gate — %s; running %s",
+                        self._name, reason, script)
+            self._gcode.run_script(script)
+            return True
+        except Exception as e:
+            logger.warning("[%s]: startup check-gate failed (%s): %s",
+                           self._name, script, e)
+            return False
+
+    def _startup_check_unknown_gate(self, eventtime):
+        """Ask Happy Hare to classify this gate if it still reports unknown."""
+        if self._gcode is None:
+            return
+        if self._is_printing():
+            logger.info(
+                "[%s]: gate %d — startup check-gate skipped while printing",
+                self._name, self._gate)
+            return
+
+        hh = self._read_hh_status(eventtime)
+        if not hh.present or self._gate >= hh.gate_count:
+            return
+        if hh.status != -1:
+            return
+        if not hh.idle:
+            logger.info(
+                "[%s]: gate %d — startup check-gate skipped because "
+                "Happy Hare is busy (action=%s)",
+                self._name, self._gate, hh.action)
+            return
+        if hh.filament_pos != hh_status.FILAMENT_POS_UNLOADED:
+            logger.info(
+                "[%s]: gate %d — startup check-gate skipped because "
+                "filament is not parked (filament_pos=%d)",
+                self._name, self._gate, hh.filament_pos)
+            return
+
+        if self._startup_run_check_gate(
+                self._gate,
+                "Happy Hare reports gate %d status=-1" % self._gate):
+            refreshed = self._read_hh_status(self.reactor.monotonic())
+            logger.info(
+                "[%s]: gate %d — startup check-gate complete; "
+                "Happy Hare status=%s spool=%s",
+                self._name, self._gate, refreshed.status, refreshed.spool)
+
+    def _startup_check_unknown_gate_event(self, eventtime):
+        was_polling = self._polling
+        if was_polling:
+            self.reactor.update_timer(self._poll_timer, self.reactor.NEVER)
+        try:
+            self._startup_check_unknown_gate(eventtime)
+            seed_time = self.reactor.monotonic()
+            self._seed_cache_from_hh(seed_time)
+            hh = self._read_hh_status(seed_time)
+            if hh.present and self._gate < hh.gate_count:
+                self._prev_gate_status = hh.status
+        finally:
+            if was_polling and not self._failed:
+                self.reactor.update_timer(
+                    self._poll_timer,
+                    self.reactor.monotonic() + self._poll_interval)
+        return self.reactor.NEVER
+
     def _delayed_init(self, eventtime):
         """Initialise the NFC Reader after other I2C devices have settled.
 
@@ -1946,12 +2019,25 @@ class NFCGate:
         # after restart does not re-dispatch a spool Happy Hare already knows about.
         # Shared reader has no Happy Hare gate assignment to seed and no scan-jog edge detector.
         if not self._failed and not self._shared:
-            self._seed_cache_from_hh(eventtime)
+            seed_time = self.reactor.monotonic()
+            self._seed_cache_from_hh(seed_time)
             # Bootstrap the scan-jog edge detector with the current gate status
             # so a pre-loaded gate never triggers a scan on the first poll.
-            hh = self._read_hh_status(eventtime)
+            hh = self._read_hh_status(seed_time)
             if hh.present and self._gate < hh.gate_count:
                 self._prev_gate_status = hh.status
+            if self._spoolman is None:
+                delay = (STARTUP_UNKNOWN_GATE_CHECK_DELAY
+                         + (self._gate
+                            * STARTUP_UNKNOWN_GATE_CHECK_STAGGER))
+                self.reactor.update_timer(
+                    self._startup_check_timer,
+                    self.reactor.monotonic() + delay)
+                if self._debug >= 3:
+                    logger.info(
+                        "[%s]: gate %d — Spoolman disabled; startup "
+                        "unknown-gate check scheduled in %.1fs",
+                        self._name, self._gate, delay)
 
         if self._gcode is not None:
             if self._failed:
@@ -2008,6 +2094,8 @@ class NFCGate:
                          self._name)
         self._polling = False
         self.reactor.update_timer(self._poll_timer, self.reactor.NEVER)
+        self.reactor.update_timer(self._startup_check_timer,
+                                  self.reactor.NEVER)
         if self._shared and self._shared_pending_spool is None:
             self._shared_restore_hh_leds()
         if self._scan_timer is not None:
@@ -2132,7 +2220,8 @@ class NFCGate:
         # Scan-jog gate-status edge detection.
         # Reads Happy Hare gate_status on every tick — Python dict only, no I2C.
         # When gate is empty (curr==0) skip the I2C read entirely.
-        # On < 1 -> >=1 transition with Happy Hare idle and not printing, enter scan mode.
+        # On 0 -> >=1 transition with Happy Hare idle and not printing, enter scan mode.
+        # A -1 -> >=1 transition is Happy Hare resolving an unknown state, not a new load.
         if self._scan_enabled:
             hh = self._read_hh_status(eventtime)
             if hh.present and self._gate < hh.gate_count:
@@ -2187,8 +2276,9 @@ class NFCGate:
                             self._name, self._gate)
                         return self.reactor.monotonic() + 1.0
                     return self.reactor.monotonic() + self._poll_interval
-                # 0→1 edge: arm pending flag and let Happy Hare fully settle
-                if prev < 1  and curr >= 1:
+                # 0→1 edge: arm pending flag and let Happy Hare fully settle.
+                # Do not treat -1→1 as a preload; that is unknown-state recovery.
+                if prev == hh_status.GATE_EMPTY and curr >= 1:
                     self._scan_pending = True
                     self._scan_deferred_notified = False
                     self._scan_idle_ready_time = 0.0
@@ -2415,6 +2505,18 @@ class NFCGate:
 
     def _poll_hh_pause_check(self):
         """Suspend polling while Happy Hare says filament is still present."""
+        if not self._scan_mode:
+            hh = self._read_hh_status()
+            if hh.present and hh.available:
+                if not self._hh_load_paused:
+                    self._hh_load_paused = True
+                    logger.info(
+                        "[%s]: gate %d — Happy Hare reports filament "
+                        "present (status=%s spool=%s); suspending NFC poll "
+                        "until ejected",
+                        self._name, self._gate, hh.status, hh.spool)
+                self._state.miss_count = 0
+                return True
         if (not self._scan_mode
                 and self._hh_gate_matches_current_spool()
                 and self._state.current_spool is not None):
@@ -2473,8 +2575,12 @@ class NFCGate:
                 action_str = "REMOVED  (tag absent for %d consecutive polls)" % (
                     self._state.absent_threshold,)
             elif etype == EVENT_UID_ONLY:
-                action_str = "NO_SPOOL  (uid=%s not registered in Spoolman)" % (
-                    event[2],)
+                if self._spoolman is None:
+                    action_str = "NO_SPOOL  (uid=%s no metadata/spool assignment)" % (
+                        event[2],)
+                else:
+                    action_str = "NO_SPOOL  (uid=%s not registered in Spoolman)" % (
+                        event[2],)
             else:
                 action_str = str(etype)
         logger.debug("[%s]: POLL  gate=%-2d  %-28s  →  %s",
@@ -2734,6 +2840,8 @@ class NFCGate:
         else:
             poll_state = "not polling"
         hh = self._read_hh_status()
+        if hh.present and hh.available and not self._scan_mode:
+            poll_state = "polling suspended"
         hh_label = hh.label()
         sync_note = ''
         nfc_spool = self._state.current_spool
@@ -2762,17 +2870,10 @@ class NFCGate:
             meta = tag.meta if tag is not None else {}
             material = (meta or {}).get('material', '')
             color = (meta or {}).get('color_hex', '')
-            spool_identity = (
-                getattr(tag, 'spool_identity', None)
-                if tag is not None else None)
-            if not spool_identity:
-                spool_identity = (meta or {}).get('spool_identity') or 'None'
             return _status_html_words(
-                "  %s:  tag %s  metadata material=%s color=%s "
-                "spool_identity=%s   [%s]%s  [%s]"
+                "  %s:  tag %s  metadata material=%s color=%s   [%s]%s  [%s]"
                 % (label, self._state.current_uid,
-                   material, color, spool_identity, poll_state, sync_note,
-                   hh_label))
+                   material, color, poll_state, sync_note, hh_label))
         if self._state.current_spool is not None:
             return _status_html_words(
                 "  %s:  spool %-2d  UID %s   [%s]%s   [%s]"
