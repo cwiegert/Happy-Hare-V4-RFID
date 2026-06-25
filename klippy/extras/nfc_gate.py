@@ -41,6 +41,7 @@ def load_config(config):
     del _lane_instances[:]
     _nfc_manager._shared_instance = None
     _nfc_manager._shared_configured = False
+    _nfc_manager._startup_gate_check_all_done = False
     del _nfc_manager._diagnostic_warnings[:]
     return NFCGateDefaults(config)
 
@@ -55,6 +56,7 @@ def load_config_prefix(config):
         del _lane_instances[:]
         _nfc_manager._shared_instance = None
         _nfc_manager._shared_configured = False
+        _nfc_manager._startup_gate_check_all_done = False
         del _nfc_manager._diagnostic_warnings[:]
     defaults = printer.lookup_object('nfc_gate', None)
     gate     = NFCGate(config, defaults)

@@ -284,6 +284,7 @@ _lane_instances = []
 # Single shared reader instance, set by NFCGate._handle_connect when shared=true.
 _shared_instance = None
 _shared_configured = False
+_startup_gate_check_all_done = False
 
 # Internal gate number for the shared reader.  Not exposed to users — the shared
 # reader has no Happy Hare gate assignment and does not use this value for Happy Hare
@@ -609,8 +610,9 @@ class NFCGateDefaults:
                                                  minval=-1, maxval=1)
         self.startup_poll_delay = config.getfloat('startup_poll_delay', 0.,
                                                    minval=0., maxval=3600.)
-        self.startup_check_unknown_gates = config.getboolean(
-            'startup_check_unknown_gates', True)
+        self.startup_check_gates = config.getboolean(
+            'startup_check_gates',
+            config.getboolean('startup_check_unknown_gates', True))
         self.absent_threshold   = config.getint('absent_threshold', 3,
                                                  minval=1, maxval=255)
         self.transceive_delay   = config.getfloat('transceive_delay', 0.250,
@@ -788,7 +790,7 @@ class NFCGate:
             self._poll_interval = 0.0
             self._startup_polling = 0
             self._startup_poll_delay = 0.0
-            self._startup_check_unknown_gates = False
+            self._startup_check_gates = False
             self._absent_threshold = 3
             self._debug = d.debug if d else 2
             self._low_level_debug = False
@@ -841,9 +843,11 @@ class NFCGate:
             'startup_poll_delay',
             d.startup_poll_delay if d else 0.,
             minval=0., maxval=3600.)
-        self._startup_check_unknown_gates = config.getboolean(
-            'startup_check_unknown_gates',
-            d.startup_check_unknown_gates if d else True)
+        self._startup_check_gates = config.getboolean(
+            'startup_check_gates',
+            config.getboolean(
+                'startup_check_unknown_gates',
+                d.startup_check_gates if d else True))
         self._absent_threshold = config.getint('absent_threshold',
                                                 d.absent_threshold if d else 3,
                                                 minval=1, maxval=255)
@@ -1879,9 +1883,22 @@ class NFCGate:
             self.reactor.monotonic() + 2.0
         )
 
-    def _startup_check_unknown_gate(self, eventtime):
-        """Ask Happy Hare to classify this gate if it still reports unknown."""
-        if not getattr(self, '_startup_check_unknown_gates', False):
+    def _startup_run_check_gate(self, gate_number, reason):
+        script = "MMU_CHECK_GATE GATE=%d" % gate_number
+        try:
+            logger.info("[%s]: startup check-gate — %s; running %s",
+                        self._name, reason, script)
+            self._gcode.run_script(script)
+            return True
+        except Exception as e:
+            logger.warning("[%s]: startup check-gate failed (%s): %s",
+                           self._name, script, e)
+            return False
+
+    def _startup_check_gates(self, eventtime):
+        """Ask Happy Hare to classify gates at startup when configured."""
+        global _startup_gate_check_all_done
+        if not getattr(self, '_startup_check_gates', False):
             return
         if self._gcode is None:
             return
@@ -1891,40 +1908,60 @@ class NFCGate:
                 self._name, self._gate)
             return
 
+        status = hh_status.read_full(self.printer, eventtime)
+        if not status.present:
+            return
+        if not status.idle:
+            logger.info(
+                "[%s]: startup check-gate skipped because "
+                "Happy Hare is busy (action=%s)",
+                self._name, status.action)
+            return
+        if status.filament_pos != hh_status.FILAMENT_POS_UNLOADED:
+            logger.info(
+                "[%s]: startup check-gate skipped because "
+                "filament is not parked (filament_pos=%d)",
+                self._name, status.filament_pos)
+            return
+
+        if self._spoolman is None:
+            if _startup_gate_check_all_done:
+                return
+            gates = sorted(set(
+                gate._gate for gate in _lane_instances
+                if (not getattr(gate, '_shared', False)
+                    and getattr(gate, '_enabled', True)
+                    and gate._gate < len(status.gate_statuses))))
+            if not gates:
+                return
+            _startup_gate_check_all_done = True
+            for gate_number in gates:
+                self._startup_run_check_gate(
+                    gate_number,
+                    "Spoolman disabled; checking configured gate %d"
+                    % gate_number)
+            refreshed = hh_status.read_full(self.printer,
+                                            self.reactor.monotonic())
+            logger.info(
+                "[%s]: startup check-gate complete for gates %s; "
+                "Happy Hare statuses=%s",
+                self._name, ",".join(str(g) for g in gates),
+                refreshed.gate_statuses)
+            return
+
         hh = self._read_hh_status(eventtime)
         if not hh.present or self._gate >= hh.gate_count:
             return
         if hh.status != -1:
             return
-        if not hh.idle:
-            logger.info(
-                "[%s]: gate %d — startup check-gate skipped because "
-                "Happy Hare is busy (action=%s)",
-                self._name, self._gate, hh.action)
-            return
-        if hh.filament_pos != hh_status.FILAMENT_POS_UNLOADED:
-            logger.info(
-                "[%s]: gate %d — startup check-gate skipped because "
-                "filament is not parked (filament_pos=%d)",
-                self._name, self._gate, hh.filament_pos)
-            return
-
-        script = "MMU_CHECK_GATE GATE=%d" % self._gate
-        try:
-            logger.info(
-                "[%s]: gate %d — Happy Hare reports status=-1; "
-                "running %s",
-                self._name, self._gate, script)
-            self._gcode.run_script(script)
+        if self._startup_run_check_gate(
+                self._gate,
+                "Happy Hare reports gate %d status=-1" % self._gate):
             refreshed = self._read_hh_status(self.reactor.monotonic())
             logger.info(
                 "[%s]: gate %d — startup check-gate complete; "
                 "Happy Hare status=%s spool=%s",
                 self._name, self._gate, refreshed.status, refreshed.spool)
-        except Exception as e:
-            logger.warning(
-                "[%s]: gate %d — startup check-gate failed (%s): %s",
-                self._name, self._gate, script, e)
 
     def _delayed_init(self, eventtime):
         """Initialise the NFC Reader after other I2C devices have settled.
@@ -1956,7 +1993,7 @@ class NFCGate:
         # after restart does not re-dispatch a spool Happy Hare already knows about.
         # Shared reader has no Happy Hare gate assignment to seed and no scan-jog edge detector.
         if not self._failed and not self._shared:
-            self._startup_check_unknown_gate(eventtime)
+            self._startup_check_gates(eventtime)
             seed_time = self.reactor.monotonic()
             self._seed_cache_from_hh(seed_time)
             # Bootstrap the scan-jog edge detector with the current gate status
