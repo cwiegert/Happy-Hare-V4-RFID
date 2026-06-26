@@ -28,7 +28,8 @@ SCAN_JOG_SUBSTEPS = 3
 LEFT_NEIGHBOR_CLEARANCE_MM = 75.0
 LEFT_NEIGHBOR_CLEARANCE_RETRIES = 3
 TAG_READ_HOLD_DELAY = 0.1
-CONTINUOUS_QUEUE_COMPLETE_EPSILON = 0.05
+CONTINUOUS_QUEUE_COMPLETE_POLL_FRACTION = 0.6
+CONTINUOUS_QUEUE_COMPLETE_MIN_EPSILON = 0.01
 
 LED_SEARCHING  = 'mmu_clockwise_slow'
 LED_TAG_READ   = 'mmu_RFID_read'
@@ -631,6 +632,8 @@ def start(gate, max_mm=None):
     gate._scan_continuous_tag_pending = False
     gate._scan_continuous_pending_uid = None
     gate._scan_continuous_pending_target_info = None
+    gate._scan_continuous_queue_baseline = 0.0
+    gate._scan_continuous_queue_active_remaining = 0.0
     gate._scan_continuous_direct_available = True
     gate._scan_continuous_overshoot_backed_up = False
     gate._scan_continuous_overshoot_uid = None
@@ -1309,6 +1312,8 @@ def disconnect_cleanup(gate):
     gate._scan_continuous_tag_pending = False
     gate._scan_continuous_pending_uid = None
     gate._scan_continuous_pending_target_info = None
+    gate._scan_continuous_queue_baseline = 0.0
+    gate._scan_continuous_queue_active_remaining = 0.0
     gate._scan_continuous_direct_available = True
     gate._scan_continuous_overshoot_backed_up = False
     gate._scan_continuous_overshoot_uid = None
@@ -1847,18 +1852,31 @@ def refresh_continuous_move_complete(gate, move_inflight, complete_time):
         return gate.reactor.monotonic() >= complete_time, complete_time
     remaining = continuous_queue_remaining(gate)
     gate._scan_continuous_queue_remaining = remaining
+    # Klipper toolhead timing normally keeps a startup buffer
+    # (BUFFER_TIME_START, commonly 0.250s) between get_last_move_time() and
+    # estimated_print_time().  Treat that pre-existing queue depth as the
+    # baseline and only wait for the extra time added by this Direct Move.
+    active_remaining = max(
+        0.0, remaining - getattr(gate, '_scan_continuous_queue_baseline', 0.0))
+    gate._scan_continuous_queue_active_remaining = active_remaining
+    completion_threshold = max(
+        CONTINUOUS_QUEUE_COMPLETE_MIN_EPSILON,
+        gate._scan_continuous_poll_interval * CONTINUOUS_QUEUE_COMPLETE_POLL_FRACTION)
     if gate._debug >= 4:
         logger.debug(
             "[%s]: continuous queue timing completion check "
-            "queue_remaining=%s threshold=%.3f",
+            "queue_remaining=%s baseline=%s active_remaining=%s threshold=%.3f",
             gate._name.capitalize(),
             _fmt_optional_float(remaining),
-            CONTINUOUS_QUEUE_COMPLETE_EPSILON)
-    if remaining <= CONTINUOUS_QUEUE_COMPLETE_EPSILON:
+            _fmt_optional_float(getattr(
+                gate, '_scan_continuous_queue_baseline', 0.0)),
+            _fmt_optional_float(active_remaining),
+            completion_threshold)
+    if active_remaining <= completion_threshold:
         gate._scan_continuous_move_complete_time = gate.reactor.monotonic()
         return True, gate._scan_continuous_move_complete_time
     gate._scan_continuous_move_complete_time = (
-        gate.reactor.monotonic() + max(0.0, remaining))
+        gate.reactor.monotonic() + max(0.0, active_remaining))
     return False, gate._scan_continuous_move_complete_time
 
 
@@ -1899,9 +1917,10 @@ def run_direct_continuous_jog(gate, mm):
         return False
     try:
         gate._scan_continuous_queue_remaining = None
+        gate._scan_continuous_queue_baseline = 0.0
+        gate._scan_continuous_queue_active_remaining = 0.0
         timing_before = (None, None)
-        if gate._debug >= 4:
-            timing_before = _continuous_timing_snapshot(gate, mmu_toolhead)
+        timing_before = _continuous_timing_snapshot(gate, mmu_toolhead)
         if not gate._scan_gate_selected:
             mmu.select_gate(gate._gate)
             gate._scan_gate_selected = True
@@ -1935,10 +1954,17 @@ def run_direct_continuous_jog(gate, mm):
             printer_toolhead.flush_step_generation()
         last_after, est_after = _continuous_timing_snapshot(
             gate, mmu_toolhead)
+        last_before, est_before = timing_before
+        # This baseline is usually close to Klipper's BUFFER_TIME_START
+        # (0.250s).  It is not part of the newly queued MMU move, so completion
+        # checks compare against active_remaining instead of absolute queue time.
+        queue_baseline = last_before - est_before
         queue_remaining = last_after - est_after
+        queue_active_remaining = max(0.0, queue_remaining - queue_baseline)
+        gate._scan_continuous_queue_baseline = queue_baseline
         gate._scan_continuous_queue_remaining = queue_remaining
+        gate._scan_continuous_queue_active_remaining = queue_active_remaining
         if gate._debug >= 4:
-            last_before, est_before = timing_before
             last_delta = (
                 last_after - last_before
                 if last_after is not None and last_before is not None
@@ -1947,14 +1973,16 @@ def run_direct_continuous_jog(gate, mm):
                 "[%s]: continuous Direct Move timing detail "
                 "mmu_last_before=%s mmu_last_after=%s "
                 "last_delta=%s mcu_est_before=%s mcu_est_after=%s "
-                "queue_remaining=%s",
+                "queue_baseline=%s queue_remaining=%s active_remaining=%s",
                 gate._name.capitalize(),
                 _fmt_optional_float(last_before),
                 _fmt_optional_float(last_after),
                 _fmt_optional_float(last_delta),
                 _fmt_optional_float(est_before),
                 _fmt_optional_float(est_after),
-                _fmt_optional_float(queue_remaining))
+                _fmt_optional_float(queue_baseline),
+                _fmt_optional_float(queue_remaining),
+                _fmt_optional_float(queue_active_remaining))
         return True
     except Exception:
         logger.exception(
