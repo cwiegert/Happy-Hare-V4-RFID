@@ -1915,6 +1915,11 @@ def run_direct_continuous_jog(gate, mm):
     mmu_toolhead = getattr(mmu, 'mmu_toolhead', None)
     if mmu_toolhead is None:
         return False
+    mcu = getattr(mmu_toolhead, 'mcu', None)
+    if mcu is None:
+        mcu = gate.printer.lookup_object('mcu', None)
+    if mcu is None:
+        return False
     try:
         gate._scan_continuous_queue_remaining = None
         gate._scan_continuous_queue_baseline = 0.0
@@ -1948,12 +1953,17 @@ def run_direct_continuous_jog(gate, mm):
         pos[1] += float(mm)
         with mmu.wrap_accel(accel):
             mmu_toolhead.move(pos, speed)
-        mmu_toolhead.flush_step_generation()
-        printer_toolhead = getattr(mmu, 'toolhead', None)
-        if printer_toolhead is not None:
-            printer_toolhead.flush_step_generation()
-        last_after, est_after = _continuous_timing_snapshot(
-            gate, mmu_toolhead)
+        # Do not call flush_step_generation() here.  On current Klipper,
+        # flush_all_steps() waits until only about BGFLUSH_HIGH_TIME (0.400s)
+        # remains in the motion queue, so a longer continuous scan chunk would
+        # return just as late as a short one.  Process lookahead enough to put
+        # the move in the MMU trapq and let Klipper's background flusher send
+        # steps while NFC UID probes run.
+        if hasattr(mmu_toolhead, '_process_lookahead'):
+            mmu_toolhead._process_lookahead()
+        last_after = float(mmu_toolhead.print_time)
+        est_after = float(
+            mcu.estimated_print_time(gate.reactor.monotonic()))
         last_before, est_before = timing_before
         # This baseline is usually close to Klipper's BUFFER_TIME_START
         # (0.250s).  It is not part of the newly queued MMU move, so completion
