@@ -1407,56 +1407,32 @@ def next_decode_retry_move(gate, max_attempts, retry_mm):
 
 
 def next_continuous_overshoot_retry_move(gate, max_attempts, retry_mm):
-    """Two-phase retry walk for continuous overshoot mode.
+    """Retry around the continuous overshoot backup point.
 
-    Phase 1: step backward from the backup point in retry_mm increments (floor at 0).
-    Phase 2: return to the backup point, then step forward up to the UID detection position.
+    The backup point is the best available center after an in-flight UID probe.
+    Match the normal decode-retry contract here: with retry_mm=2 and 5 rounds,
+    target offsets are +2, -2, +4, -4, ... from that center.  The returned
+    value is the jog from the current position to the next target offset.
     """
-    start_mm = getattr(gate, '_scan_continuous_overshoot_start_mm', gate._scan_mm_total)
-    origin_mm = getattr(gate, '_scan_continuous_overshoot_origin_mm', gate._scan_max_mm)
-    max_backward = max(1, max_attempts // 2)
-    retry_phase = getattr(gate, '_scan_continuous_retry_phase', 1)
+    start_mm = getattr(
+        gate, '_scan_continuous_overshoot_start_mm', gate._scan_mm_total)
+    current_offset = gate._scan_mm_total - start_mm
 
-    if retry_phase == 2:
-        correction = start_mm - gate._scan_mm_total
-        if correction > 0.001:
-            return correction
-        while gate._scan_decode_retry_attempts < max_attempts:
-            move = retry_mm
-            if gate._scan_mm_total + move > origin_mm:
-                move = origin_mm - gate._scan_mm_total
-            gate._scan_decode_retry_attempts += 1
-            if abs(move) > 0.001:
-                return move
-            gate._scan_decode_retry_attempts = max_attempts
-            break
-        return 0.0
-
-    # Phase 1: backward steps from backup point
-    while gate._scan_decode_retry_attempts < max_backward:
-        move = -retry_mm
-        if gate._scan_mm_total + move < 0.0:
-            move = -gate._scan_mm_total
-        gate._scan_decode_retry_attempts += 1
-        if abs(move) > 0.001:
-            return move
-        gate._scan_decode_retry_attempts = max_backward
-        break
-
-    # Transition to phase 2
-    gate._scan_continuous_retry_phase = 2
-    correction = start_mm - gate._scan_mm_total
-    if correction > 0.001:
-        return correction
     while gate._scan_decode_retry_attempts < max_attempts:
-        move = retry_mm
-        if gate._scan_mm_total + move > origin_mm:
-            move = origin_mm - gate._scan_mm_total
+        attempt_index = gate._scan_decode_retry_attempts
+        round_index = attempt_index // 2
+        side = 1.0 if attempt_index % 2 == 0 else -1.0
+        target_offset = side * retry_mm * (round_index + 1)
+        move = target_offset - current_offset
+        next_total = gate._scan_mm_total + move
+        if next_total < 0.0:
+            move = -gate._scan_mm_total
+        elif next_total > gate._scan_max_mm:
+            move = gate._scan_max_mm - gate._scan_mm_total
         gate._scan_decode_retry_attempts += 1
         if abs(move) > 0.001:
             return move
-        gate._scan_decode_retry_attempts = max_attempts
-        break
+        current_offset += move
     return 0.0
 
 
