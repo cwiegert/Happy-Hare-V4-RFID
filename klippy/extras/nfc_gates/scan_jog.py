@@ -23,11 +23,14 @@ except ImportError:
         return text
 
 
-DECODE_RETRY_SETTLE_DELAY = 1.0
+# Short settle after a decode-retry jog/backup before trying rich tag reads again.
+DECODE_RETRY_SETTLE_DELAY = 0.2
 SCAN_JOG_SUBSTEPS = 3
 LEFT_NEIGHBOR_CLEARANCE_MM = 75.0
 LEFT_NEIGHBOR_CLEARANCE_RETRIES = 3
 TAG_READ_HOLD_DELAY = 0.1
+CONTINUOUS_QUEUE_COMPLETE_POLL_FRACTION = 0.25
+CONTINUOUS_QUEUE_COMPLETE_MIN_EPSILON = 0.01
 
 LED_SEARCHING  = 'mmu_clockwise_slow'
 LED_TAG_READ   = 'mmu_RFID_read'
@@ -232,14 +235,15 @@ def continuous_probe_uid(gate):
     """Lightweight UID-only probe while a continuous chunk is in flight."""
     uid = None
     target_info = None
+    probe_timeout = getattr(gate, '_scan_continuous_poll_interval', 0.050)
     read_tag = getattr(gate._reader, 'read_tag', None)
     if read_tag is not None:
-        uid = read_tag()
+        uid = read_tag(timeout=probe_timeout)
     else:
         read_target = getattr(gate._reader, 'read_target', None)
         if read_target is None:
             return False
-        target_info = read_target()
+        target_info = read_target(timeout=probe_timeout)
         if target_info is None:
             return False
         uid = target_info.get('uid')
@@ -260,6 +264,33 @@ def continuous_probe_uid(gate):
             "deferring Spoolman/rich resolution until current move completes",
             gate._name.capitalize(), uid)
     return True
+
+
+def log_continuous_queue_remaining(gate, label):
+    """Log Klipper's remaining queued MMU move time for continuous-scan debug."""
+    if gate._debug < 4:
+        return None
+    mmu = gate.printer.lookup_object('mmu', None)
+    mmu_toolhead = getattr(mmu, 'mmu_toolhead', None) if mmu is not None else None
+    if mmu_toolhead is None:
+        logger.debug(
+            "[%s]: continuous queue timing %s unavailable: no mmu_toolhead",
+            gate._name.capitalize(), label)
+        return None
+    last_move_time, estimated_print_time = _continuous_timing_snapshot(
+        gate, mmu_toolhead)
+    queue_remaining = (
+        last_move_time - estimated_print_time
+        if last_move_time is not None and estimated_print_time is not None
+        else None)
+    logger.debug(
+        "[%s]: continuous queue timing %s "
+        "mmu_last=%s mcu_est=%s queue_remaining=%s",
+        gate._name.capitalize(), label,
+        _fmt_optional_float(last_move_time),
+        _fmt_optional_float(estimated_print_time),
+        _fmt_optional_float(queue_remaining))
+    return queue_remaining
 
 
 def _cache_continuous_resolved_uid(gate, uid, spool_id, path):
@@ -335,6 +366,31 @@ def cache_continuous_uid_only_if_needed(gate):
     return True
 
 
+def retry_continuous_overshoot_position(gate, now, max_attempts=3):
+    uid = getattr(gate, '_scan_continuous_pending_uid', None)
+    if not uid:
+        return False
+    if not getattr(gate, '_tag_parsing', False):
+        return False
+    if getattr(gate, '_scan_continuous_overshoot_backed_up', False):
+        return False
+    attempts = int(getattr(
+        gate, '_scan_continuous_overshoot_position_attempts', 0)) + 1
+    gate._scan_continuous_overshoot_position_attempts = attempts
+    if attempts >= max_attempts:
+        return False
+    if gate._debug >= 3:
+        logger.info(
+            "[%s]: continuous scan uid=%s unresolved at overshoot "
+            "position; retrying rich tag parse attempt %d/%d before backup",
+            gate._name.capitalize(), uid, attempts + 1, max_attempts)
+    gate._scan_next_chunk_time = (
+        gate.reactor.monotonic()
+        + getattr(gate, '_scan_continuous_poll_interval', 0.05))
+    gate._scan_continuous_tag_pending = True
+    return True
+
+
 def queue_continuous_overshoot_backup(gate, now):
     uid = getattr(gate, '_scan_continuous_pending_uid', None)
     if not uid:
@@ -355,23 +411,58 @@ def queue_continuous_overshoot_backup(gate, now):
     if backup_mm <= 0.001:
         return False
     move = -backup_mm
-    msg = ("[WARN] NFC[%s]: uid=%s not resolved in Spoolman; backing up %.1fmm "
-           "before rich tag parse" % (gate._name.capitalize(), uid, backup_mm))
+    gate._scan_continuous_chunk_start_mm = max(
+        0.0, gate._scan_mm_total - gate._scan_continuous_last_move_mm)
+    if gate._spoolman is None:
+        msg = ("[WARN] NFC[%s]: uid=%s not resolved after rich tag reads; "
+               "backing up %.1fmm before retry"
+               % (gate._name.capitalize(), uid, backup_mm))
+    else:
+        msg = ("[WARN] NFC[%s]: uid=%s not resolved in Spoolman or rich tag reads; "
+               "backing up %.1fmm before retry"
+               % (gate._name.capitalize(), uid, backup_mm))
     logger.info(msg)
     gate._console(msg)
     gate._run_jog(move)
     effect_name = getattr(gate, '_scan_searching_effect', LED_SEARCHING)
     _led_effect(gate, effect_name)
     _schedule_led_reassert(gate, effect_name)
+    gate._scan_continuous_overshoot_origin_mm = gate._scan_mm_total
+    gate._scan_continuous_overshoot_start_mm = max(0.0, gate._scan_mm_total + move)
+    gate._scan_continuous_retry_phase = 1
     gate._scan_mm_total = max(0.0, gate._scan_mm_total + move)
     gate._scan_continuous_overshoot_uid = uid
+    gate._scan_decode_retry_uid = uid
+    gate._scan_decode_retry_attempts = 0
     gate._scan_decode_retry_offset = 0.0
     gate._scan_next_chunk_time = gate.reactor.monotonic() + DECODE_RETRY_SETTLE_DELAY
-    logger.info(
-        "[%s]: continuous unresolved UID overshoot backup queued %.1fmm  "
-        "scan position %.1f / %.1fmm",
-        gate._name.capitalize(), move, gate._scan_mm_total, gate._scan_max_mm)
+    if gate._debug >= 3:
+        logger.info(
+            "[%s]: continuous unresolved UID overshoot backup queued %.1fmm  "
+            "scan position %.1f / %.1fmm",
+            gate._name.capitalize(), move, gate._scan_mm_total, gate._scan_max_mm)
     return True
+
+
+def queue_continuous_post_backup_retry(gate, now):
+    uid = getattr(gate, '_scan_decode_retry_uid', None)
+    if not uid:
+        return False
+    if getattr(gate, '_scan_motion_mode', 'stopped') != 'continuous':
+        return False
+    if not getattr(gate, '_scan_continuous_overshoot_backed_up', False):
+        return False
+    if getattr(gate, '_scan_continuous_overshoot_uid', None) != uid:
+        return False
+    max_attempts, retry_mm = decode_retry_config(gate)
+    if max_attempts <= 0 or retry_mm <= 0.0:
+        return False
+    if gate._scan_decode_retry_attempts >= max_attempts:
+        return False
+    return queue_decode_retry_move(
+        gate, now, uid,
+        "no complete tag read after continuous overshoot backup",
+        max_attempts, retry_mm)
 
 
 def full_poll_after_continuous_probe(gate):
@@ -380,9 +471,29 @@ def full_poll_after_continuous_probe(gate):
     try:
         tag_found = gate._poll()
     finally:
-        gate._scan_continuous_pending_uid = None
-        gate._scan_continuous_pending_target_info = None
+        if tag_found:
+            gate._scan_continuous_pending_uid = None
+            gate._scan_continuous_pending_target_info = None
     return tag_found
+
+
+def full_poll_after_continuous_probe_resolved(gate):
+    """Return True only when the deferred UID resolves to spool or metadata."""
+    uid = getattr(gate, '_scan_continuous_pending_uid', None)
+    tag_found = False
+    try:
+        tag_found = gate._poll()
+    finally:
+        resolved = (
+            tag_found
+            and gate._state.current_uid == uid
+            and gate._state.current_spool is not None)
+        if resolved:
+            gate._scan_continuous_pending_uid = None
+            gate._scan_continuous_pending_target_info = None
+        elif tag_found and gate._state.current_uid == uid:
+            gate._scan_found_event = None
+    return resolved
 
 
 def chunk_dwell(gate):
@@ -515,14 +626,20 @@ def start(gate, max_mm=None):
     gate._scan_mm_total = 0.0
     gate._scan_next_chunk_time = gate.reactor.monotonic()
     gate._scan_continuous_move_inflight = False
+    gate._scan_continuous_move_source = None
     gate._scan_continuous_move_complete_time = 0.0
     gate._scan_continuous_last_move_mm = 0.0
+    gate._scan_continuous_probe_due = False
     gate._scan_continuous_tag_pending = False
     gate._scan_continuous_pending_uid = None
     gate._scan_continuous_pending_target_info = None
+    gate._scan_continuous_queue_baseline = 0.0
+    gate._scan_continuous_queue_active_remaining = 0.0
     gate._scan_continuous_direct_available = True
     gate._scan_continuous_overshoot_backed_up = False
     gate._scan_continuous_overshoot_uid = None
+    gate._scan_continuous_overshoot_position_attempts = 0
+    gate._scan_continuous_chunk_start_mm = None
     gate._scan_position_reads_done = 0
     gate._scan_decode_retry_attempts = 0
     gate._scan_decode_retry_uid = None
@@ -642,6 +759,8 @@ def stopped_step_event(gate, eventtime):
             if retry_incomplete_decode(gate, now):
                 return gate.reactor.monotonic() + gate._scan_poll_interval
             if decode_retry_exhausted(gate):
+                if fail_continuous_uid_resolution_after_retries(gate):
+                    return gate.reactor.NEVER
                 resume_scan_after_decode_retry(gate, now)
                 if gate._scan_mm_total < gate._scan_max_mm:
                     return now + gate._scan_poll_interval
@@ -655,6 +774,8 @@ def stopped_step_event(gate, eventtime):
     if decode_retry_in_progress(gate):
         if continue_decode_retry(gate, now):
             return gate.reactor.monotonic() + gate._scan_poll_interval
+        if fail_continuous_uid_resolution_after_retries(gate):
+            return gate.reactor.NEVER
         resume_scan_after_decode_retry(gate, now)
         if gate._scan_mm_total < gate._scan_max_mm:
             return now + gate._scan_poll_interval
@@ -738,9 +859,12 @@ def continuous_step_event(gate, eventtime):
     now = gate.reactor.monotonic()
     move_inflight = getattr(gate, '_scan_continuous_move_inflight', False)
     complete_time = getattr(gate, '_scan_continuous_move_complete_time', 0.0)
-    move_complete = (not move_inflight) or now >= complete_time
+    probe_due = getattr(gate, '_scan_continuous_probe_due', False)
+    move_complete, complete_time = refresh_continuous_move_complete(
+        gate, move_inflight, complete_time)
+    completed_continuous_move = move_inflight and move_complete
 
-    if move_inflight and move_complete:
+    if move_inflight and move_complete and not probe_due:
         gate._scan_continuous_move_inflight = False
         move_inflight = False
 
@@ -755,17 +879,35 @@ def continuous_step_event(gate, eventtime):
         gate._scan_continuous_tag_pending = False
         tag_found = resolve_continuous_pending_uid(gate, now)
         if not tag_found:
-            if queue_continuous_overshoot_backup(gate, now):
-                return gate.reactor.monotonic() + gate._scan_continuous_poll_interval
-            tag_found = (
-                cache_continuous_uid_only_if_needed(gate)
-                or full_poll_after_continuous_probe(gate))
+            if getattr(gate, '_tag_parsing', False):
+                if full_poll_after_continuous_probe_resolved(gate):
+                    tag_found = True
+                elif retry_continuous_overshoot_position(gate, now):
+                    return gate.reactor.monotonic() + gate._scan_continuous_poll_interval
+                elif queue_continuous_overshoot_backup(gate, now):
+                    return gate.reactor.monotonic() + gate._scan_continuous_poll_interval
+            else:
+                tag_found = (
+                    cache_continuous_uid_only_if_needed(gate)
+                    or full_poll_after_continuous_probe(gate))
     else:
         try:
-            if move_inflight and not move_complete:
+            if probe_due:
+                gate._scan_continuous_probe_due = False
+                log_continuous_queue_remaining(gate, "probe_due before")
                 tag_found = continuous_probe_uid(gate)
+                log_continuous_queue_remaining(gate, "probe_due after")
+            elif move_inflight and not move_complete:
+                log_continuous_queue_remaining(gate, "inflight probe before")
+                tag_found = continuous_probe_uid(gate)
+                log_continuous_queue_remaining(gate, "inflight probe after")
             elif getattr(gate, '_scan_continuous_pending_uid', None):
                 tag_found = full_poll_after_continuous_probe(gate)
+            elif completed_continuous_move:
+                # The in-flight UID probe already checked this chunk.  If it
+                # found nothing, queue the next chunk instead of inserting a
+                # stopped, full-timeout poll that breaks continuous motion.
+                tag_found = False
             else:
                 tag_found = gate._poll()
         except Exception:
@@ -775,7 +917,7 @@ def continuous_step_event(gate, eventtime):
             gate._console(msg)
             tag_found = False
 
-    if tag_found and move_inflight and not move_complete:
+    if tag_found and move_inflight and (probe_due or not move_complete):
         gate._scan_continuous_tag_pending = True
         logger.info(
             "[%s]: continuous scan found tag during in-flight move; "
@@ -783,6 +925,8 @@ def continuous_step_event(gate, eventtime):
             gate._name.capitalize(),
             max(0.0, complete_time - gate.reactor.monotonic()),
             getattr(gate, '_scan_continuous_last_move_mm', 0.0))
+        if move_complete:
+            return gate.reactor.monotonic()
         return min(
             complete_time,
             gate.reactor.monotonic() + gate._scan_continuous_poll_interval)
@@ -802,6 +946,8 @@ def continuous_step_event(gate, eventtime):
                 gate._scan_continuous_tag_pending = False
                 return gate.reactor.monotonic() + gate._scan_continuous_poll_interval
             if decode_retry_exhausted(gate):
+                if fail_continuous_uid_resolution_after_retries(gate):
+                    return gate.reactor.NEVER
                 msg = ("[WARN] NFC[%s]: tag decode still incomplete after retries; "
                        "using best incomplete result" % gate._name.capitalize())
                 logger.info(msg)
@@ -810,9 +956,11 @@ def continuous_step_event(gate, eventtime):
         return gate.reactor.NEVER
 
     if move_inflight and not move_complete:
-        return min(
-            complete_time,
-            gate.reactor.monotonic() + gate._scan_continuous_poll_interval)
+        # No artificial delay — read_tag() blocks for poll_interval already
+        return min(complete_time, gate.reactor.monotonic())
+
+    if queue_continuous_post_backup_retry(gate, now):
+        return gate.reactor.monotonic() + gate._scan_continuous_poll_interval
 
     if gate._scan_mm_total >= gate._scan_max_mm:
         if gate._scan_found_event is not None:
@@ -841,6 +989,7 @@ def continuous_step_event(gate, eventtime):
             "[%s]: preparing continuous scan move %.2fmm  "
             "scan position %.1f / %.1fmm",
             gate._name.capitalize(), move, next_position, gate._scan_max_mm)
+    gate_was_selected = getattr(gate, '_scan_gate_selected', False)
     command_start = gate.reactor.monotonic()
     move_path = run_continuous_jog(gate, move)
     move_source = continuous_move_source(move_path)
@@ -864,13 +1013,33 @@ def continuous_step_event(gate, eventtime):
             gate._scan_continuous_speed, gate._scan_continuous_accel)
     command_elapsed = max(0.0, gate.reactor.monotonic() - command_start)
     expected_duration = continuous_chunk_interval(gate, move)
-    remaining_duration = max(0.0, expected_duration - command_elapsed)
+    # mmu.select_gate() blocks while the gate servo positions (~0.5s) before the
+    # move enters the queue. If gate selection ran during this call, command_elapsed
+    # includes that overhead and remaining_duration would be zero even though the
+    # move just started. Use expected_duration instead so in-flight probing fires
+    # for the first chunk.
+    gate_selected_this_call = (
+        not gate_was_selected and getattr(gate, '_scan_gate_selected', False))
+    if move_source == "Direct Move":
+        # For the direct Happy Hare path, command_elapsed is mostly Klipper/HH
+        # queueing work and is not reliable motion progress. Use Klipper's
+        # queued MMU move time instead so tag handling waits for real move end.
+        remaining_duration = max(0.0, gate._scan_continuous_queue_remaining)
+        timing_basis = "queue"
+    elif gate_selected_this_call:
+        remaining_duration = expected_duration
+        timing_basis = "expected_after_gate_select"
+    else:
+        remaining_duration = max(0.0, expected_duration - command_elapsed)
+        timing_basis = "estimated"
     effect_name = getattr(gate, '_scan_searching_effect', LED_SEARCHING)
     _led_effect(gate, effect_name)
     _schedule_led_reassert(gate, effect_name)
     gate._scan_mm_total += move
     gate._scan_continuous_last_move_mm = move
+    gate._scan_continuous_probe_due = True
     gate._scan_continuous_move_inflight = True
+    gate._scan_continuous_move_source = move_source
     gate._scan_continuous_move_complete_time = (
         gate.reactor.monotonic() + remaining_duration)
     gate._scan_next_chunk_time = (
@@ -878,12 +1047,13 @@ def continuous_step_event(gate, eventtime):
         + gate._scan_continuous_poll_interval)
     logger.info(
         "[%s]: continuous %s queued %.1fmm  scan position %.1f / %.1fmm "
-        "(next read in %.2fs; call returned in %.2fs, remaining move %.2fs)",
+        "(next read in %.2fs; call returned in %.2fs, remaining move %.2fs, "
+        "basis=%s)",
         gate._name.capitalize(), move_source, move,
         gate._scan_mm_total, gate._scan_max_mm,
         gate._scan_next_chunk_time - gate.reactor.monotonic(),
-        command_elapsed, remaining_duration)
-    return gate.reactor.monotonic() + gate._scan_continuous_poll_interval
+        command_elapsed, remaining_duration, timing_basis)
+    return gate.reactor.monotonic()
 
 
 def current_tag_decode_incomplete(gate):
@@ -1136,14 +1306,20 @@ def disconnect_cleanup(gate):
     gate._scan_timer = None
     gate._scan_found_event = None
     gate._scan_continuous_move_inflight = False
+    gate._scan_continuous_move_source = None
     gate._scan_continuous_move_complete_time = 0.0
     gate._scan_continuous_last_move_mm = 0.0
+    gate._scan_continuous_probe_due = False
     gate._scan_continuous_tag_pending = False
     gate._scan_continuous_pending_uid = None
     gate._scan_continuous_pending_target_info = None
+    gate._scan_continuous_queue_baseline = 0.0
+    gate._scan_continuous_queue_active_remaining = 0.0
     gate._scan_continuous_direct_available = True
     gate._scan_continuous_overshoot_backed_up = False
     gate._scan_continuous_overshoot_uid = None
+    gate._scan_continuous_overshoot_position_attempts = 0
+    gate._scan_continuous_chunk_start_mm = None
     gate._scan_decode_retry_attempts = 0
     gate._scan_decode_retry_uid = None
     gate._scan_decode_retry_offset = 0.0
@@ -1184,6 +1360,29 @@ def decode_retry_exhausted(gate):
         max_attempts > 0 and retry_mm > 0.0
         and gate._scan_decode_retry_uid is not None
         and gate._scan_decode_retry_attempts >= max_attempts)
+
+
+def fail_continuous_uid_resolution_after_retries(gate):
+    if getattr(gate, '_scan_motion_mode', 'stopped') != 'continuous':
+        return False
+    uid = getattr(gate, '_scan_decode_retry_uid', None)
+    if not uid:
+        return False
+    if getattr(gate, '_scan_continuous_overshoot_uid', None) != uid:
+        return False
+    if not getattr(gate, '_scan_continuous_overshoot_backed_up', False):
+        return False
+    if not decode_retry_exhausted(gate):
+        return False
+    max_attempts, _retry_mm = decode_retry_config(gate)
+    msg = ("[WARN] NFC[%s]: uid=%s rich tag read failed after %d local "
+           "retries; rewinding without resuming scan-jog"
+           % (gate._name.capitalize(), uid, max_attempts))
+    logger.info(msg)
+    gate._console(msg)
+    reset_uid_only_read(gate, uid)
+    gate._rewind_and_exit_scan()
+    return True
 
 
 def resume_scan_after_decode_retry(gate, now):
@@ -1273,8 +1472,42 @@ def next_decode_retry_move(gate, max_attempts, retry_mm):
     return 0.0
 
 
+def next_continuous_overshoot_retry_move(gate, max_attempts, retry_mm):
+    """Retry around the continuous overshoot backup point.
+
+    The backup point is the best available center after an in-flight UID probe.
+    Match the normal decode-retry contract here: with retry_mm=2 and 5 rounds,
+    target offsets are +2, -2, +4, -4, ... from that center.  The returned
+    value is the jog from the current position to the next target offset.
+    """
+    start_mm = getattr(
+        gate, '_scan_continuous_overshoot_start_mm', gate._scan_mm_total)
+    current_offset = gate._scan_mm_total - start_mm
+
+    while gate._scan_decode_retry_attempts < max_attempts:
+        attempt_index = gate._scan_decode_retry_attempts
+        round_index = attempt_index // 2
+        side = 1.0 if attempt_index % 2 == 0 else -1.0
+        target_offset = side * retry_mm * (round_index + 1)
+        move = target_offset - current_offset
+        next_total = gate._scan_mm_total + move
+        if next_total < 0.0:
+            move = -gate._scan_mm_total
+        elif next_total > gate._scan_max_mm:
+            move = gate._scan_max_mm - gate._scan_mm_total
+        gate._scan_decode_retry_attempts += 1
+        if abs(move) > 0.001:
+            return move
+        current_offset += move
+    return 0.0
+
+
 def queue_decode_retry_move(gate, now, uid, reason, max_attempts, retry_mm):
-    move = next_decode_retry_move(gate, max_attempts, retry_mm)
+    if (getattr(gate, '_scan_continuous_overshoot_backed_up', False)
+            and getattr(gate, '_scan_continuous_chunk_start_mm', None) is not None):
+        move = next_continuous_overshoot_retry_move(gate, max_attempts, retry_mm)
+    else:
+        move = next_decode_retry_move(gate, max_attempts, retry_mm)
     if abs(move) <= 0.001:
         return False
 
@@ -1291,9 +1524,10 @@ def queue_decode_retry_move(gate, now, uid, reason, max_attempts, retry_mm):
     gate._scan_mm_total += move
     gate._scan_decode_retry_offset += move
     gate._scan_next_chunk_time = gate.reactor.monotonic() + DECODE_RETRY_SETTLE_DELAY
-    logger.info(
-        "[%s]: decode retry move queued %.1fmm  scan position %.1f / %.1fmm",
-        gate._name.capitalize(), move, gate._scan_mm_total, gate._scan_max_mm)
+    if gate._debug >= 3:
+        logger.info(
+            "[%s]: decode retry move queued %.1fmm  scan position %.1f / %.1fmm",
+            gate._name.capitalize(), move, gate._scan_mm_total, gate._scan_max_mm)
     return True
 
 
@@ -1342,6 +1576,8 @@ def retry_incomplete_decode(gate, now):
         gate._scan_continuous_overshoot_backed_up = True
         if backup_mm > 0.001:
             move = -backup_mm
+            gate._scan_continuous_chunk_start_mm = max(
+                0.0, gate._scan_mm_total - gate._scan_continuous_last_move_mm)
             msg = ("[WARN] NFC[%s]: tag decode incomplete; backing up %.1fmm "
                    "after continuous overshoot before retry"
                    % (gate._name.capitalize(), backup_mm))
@@ -1352,22 +1588,25 @@ def retry_incomplete_decode(gate, now):
             effect_name = getattr(gate, '_scan_searching_effect', LED_SEARCHING)
             _led_effect(gate, effect_name)
             _schedule_led_reassert(gate, effect_name)
+            gate._scan_continuous_overshoot_origin_mm = gate._scan_mm_total
+            gate._scan_continuous_overshoot_start_mm = max(0.0, gate._scan_mm_total + move)
+            gate._scan_continuous_retry_phase = 1
             gate._scan_mm_total = max(0.0, gate._scan_mm_total + move)
             gate._scan_continuous_overshoot_uid = uid
-            # Treat the overshoot backup as the new center point for the rich
-            # decode retry sweep. Rewind still uses the reduced scan total, but
-            # retry offsets should now probe +/- scan_decode_retry_mm around the
-            # recentered tag position instead of jumping back toward the original
-            # continuous hit point.
             gate._scan_decode_retry_offset = 0.0
             gate._scan_next_chunk_time = (
                 gate.reactor.monotonic() + DECODE_RETRY_SETTLE_DELAY)
-            logger.info(
-                "[%s]: continuous overshoot backup queued %.1fmm  "
-                "scan position %.1f / %.1fmm",
-                gate._name.capitalize(), move,
-                gate._scan_mm_total, gate._scan_max_mm)
+            if gate._debug >= 3:
+                logger.info(
+                    "[%s]: continuous overshoot backup queued %.1fmm  "
+                    "scan position %.1f / %.1fmm",
+                    gate._name.capitalize(), move,
+                    gate._scan_mm_total, gate._scan_max_mm)
             return True
+
+    if (getattr(gate, '_scan_motion_mode', 'stopped') == 'continuous'
+            and getattr(gate, '_scan_continuous_overshoot_backed_up', False)):
+        return queue_decode_retry_move(gate, now, uid, reason, max_attempts, retry_mm)
 
     move = 0.0
     while gate._scan_decode_retry_attempts < max_attempts:
@@ -1404,9 +1643,10 @@ def retry_incomplete_decode(gate, now):
     gate._scan_mm_total += move
     gate._scan_decode_retry_offset += move
     gate._scan_next_chunk_time = gate.reactor.monotonic() + DECODE_RETRY_SETTLE_DELAY
-    logger.info(
-        "[%s]: decode retry move queued %.1fmm  scan position %.1f / %.1fmm",
-        gate._name.capitalize(), move, gate._scan_mm_total, gate._scan_max_mm)
+    if gate._debug >= 3:
+        logger.info(
+            "[%s]: decode retry move queued %.1fmm  scan position %.1f / %.1fmm",
+            gate._name.capitalize(), move, gate._scan_mm_total, gate._scan_max_mm)
     return True
 
 
@@ -1473,7 +1713,12 @@ def finish(gate):
             logger.info(msg)
             gate._console(msg)
         elif event_type == 'uid_only':
-            msg = "[WARN] NFC[%s]: tag has no Spoolman match" % gate._name.capitalize()
+            if gate._spoolman is None:
+                msg = ("[WARN] NFC[%s]: tag read, but no rich metadata "
+                       "or spool assignment was found" %
+                       gate._name.capitalize())
+            else:
+                msg = "[WARN] NFC[%s]: tag has no Spoolman match" % gate._name.capitalize()
             logger.warning(msg)
             gate._console(msg)
     gate._scan_previous_uid = None
@@ -1577,6 +1822,79 @@ def continuous_move_source(move_path):
     return str(move_path or "unknown")
 
 
+def _fmt_optional_float(value):
+    return "n/a" if value is None else "%.6f" % value
+
+
+def _continuous_timing_snapshot(gate, mmu_toolhead):
+    mcu = getattr(mmu_toolhead, 'mcu', None)
+    if mcu is None:
+        mcu = gate.printer.lookup_object('mcu', None)
+    last_move_time = float(mmu_toolhead.get_last_move_time())
+    estimated_print_time = float(
+        mcu.estimated_print_time(gate.reactor.monotonic()))
+    return last_move_time, estimated_print_time
+
+
+def continuous_lookahead_flush(mmu_toolhead):
+    flush = getattr(mmu_toolhead, '_nfc_continuous_lookahead_flush', None)
+    if flush is not None:
+        return flush
+    if hasattr(mmu_toolhead, '_process_lookahead'):
+        flush = mmu_toolhead._process_lookahead
+    elif hasattr(mmu_toolhead, 'lookahead'):
+        flush = mmu_toolhead.lookahead.flush
+    else:
+        flush = False
+    setattr(mmu_toolhead, '_nfc_continuous_lookahead_flush', flush)
+    return flush
+
+
+def continuous_queue_remaining(gate):
+    mmu = gate.printer.lookup_object('mmu', None)
+    mmu_toolhead = getattr(mmu, 'mmu_toolhead', None) if mmu is not None else None
+    if mmu_toolhead is None:
+        return None
+    last_move_time, estimated_print_time = _continuous_timing_snapshot(
+        gate, mmu_toolhead)
+    return last_move_time - estimated_print_time
+
+
+def refresh_continuous_move_complete(gate, move_inflight, complete_time):
+    if not move_inflight:
+        return True, complete_time
+    if getattr(gate, '_scan_continuous_move_source', None) != "Direct Move":
+        return gate.reactor.monotonic() >= complete_time, complete_time
+    remaining = continuous_queue_remaining(gate)
+    gate._scan_continuous_queue_remaining = remaining
+    # Klipper toolhead timing normally keeps a startup buffer
+    # (BUFFER_TIME_START, commonly 0.250s) between get_last_move_time() and
+    # estimated_print_time().  Treat that pre-existing queue depth as the
+    # baseline and only wait for the extra time added by this Direct Move.
+    active_remaining = max(
+        0.0, remaining - getattr(gate, '_scan_continuous_queue_baseline', 0.0))
+    gate._scan_continuous_queue_active_remaining = active_remaining
+    completion_threshold = max(
+        CONTINUOUS_QUEUE_COMPLETE_MIN_EPSILON,
+        gate._scan_continuous_poll_interval * CONTINUOUS_QUEUE_COMPLETE_POLL_FRACTION)
+    if gate._debug >= 4:
+        logger.debug(
+            "[%s]: continuous queue timing completion check "
+            "queue_remaining=%s baseline=%s active_remaining=%s threshold=%.3f",
+            gate._name.capitalize(),
+            _fmt_optional_float(remaining),
+            _fmt_optional_float(getattr(
+                gate, '_scan_continuous_queue_baseline', 0.0)),
+            _fmt_optional_float(active_remaining),
+            completion_threshold)
+    if active_remaining <= completion_threshold:
+        gate._scan_continuous_move_complete_time = gate.reactor.monotonic()
+        return True, gate._scan_continuous_move_complete_time
+    gate._scan_continuous_move_complete_time = (
+        gate.reactor.monotonic() + max(0.0, active_remaining))
+    return False, gate._scan_continuous_move_complete_time
+
+
 def run_continuous_jog(gate, mm):
     if (getattr(gate, '_scan_continuous_direct_available', True)
             and run_direct_continuous_jog(gate, mm)):
@@ -1612,7 +1930,17 @@ def run_direct_continuous_jog(gate, mm):
     mmu_toolhead = getattr(mmu, 'mmu_toolhead', None)
     if mmu_toolhead is None:
         return False
+    mcu = getattr(mmu_toolhead, 'mcu', None)
+    if mcu is None:
+        mcu = gate.printer.lookup_object('mcu', None)
+    if mcu is None:
+        return False
     try:
+        gate._scan_continuous_queue_remaining = None
+        gate._scan_continuous_queue_baseline = 0.0
+        gate._scan_continuous_queue_active_remaining = 0.0
+        timing_before = (None, None)
+        timing_before = _continuous_timing_snapshot(gate, mmu_toolhead)
         if not gate._scan_gate_selected:
             mmu.select_gate(gate._gate)
             gate._scan_gate_selected = True
@@ -1640,10 +1968,47 @@ def run_direct_continuous_jog(gate, mm):
         pos[1] += float(mm)
         with mmu.wrap_accel(accel):
             mmu_toolhead.move(pos, speed)
-        mmu_toolhead.flush_step_generation()
-        printer_toolhead = getattr(mmu, 'toolhead', None)
-        if printer_toolhead is not None:
-            printer_toolhead.flush_step_generation()
+        # Do not call flush_step_generation() here.  On current Klipper,
+        # flush_all_steps() waits until only about BGFLUSH_HIGH_TIME (0.400s)
+        # remains in the motion queue, so a longer continuous scan chunk would
+        # return just as late as a short one.  Process lookahead enough to put
+        # the move in the MMU trapq and let Klipper's background flusher send
+        # steps while NFC UID probes run.
+        flush_lookahead = continuous_lookahead_flush(mmu_toolhead)
+        if flush_lookahead:
+            flush_lookahead()
+        last_after = float(mmu_toolhead.print_time)
+        est_after = float(
+            mcu.estimated_print_time(gate.reactor.monotonic()))
+        last_before, est_before = timing_before
+        # This baseline is usually close to Klipper's BUFFER_TIME_START
+        # (0.250s).  It is not part of the newly queued MMU move, so completion
+        # checks compare against active_remaining instead of absolute queue time.
+        queue_baseline = last_before - est_before
+        queue_remaining = last_after - est_after
+        queue_active_remaining = max(0.0, queue_remaining - queue_baseline)
+        gate._scan_continuous_queue_baseline = queue_baseline
+        gate._scan_continuous_queue_remaining = queue_remaining
+        gate._scan_continuous_queue_active_remaining = queue_active_remaining
+        if gate._debug >= 4:
+            last_delta = (
+                last_after - last_before
+                if last_after is not None and last_before is not None
+                else None)
+            logger.debug(
+                "[%s]: continuous Direct Move timing detail "
+                "mmu_last_before=%s mmu_last_after=%s "
+                "last_delta=%s mcu_est_before=%s mcu_est_after=%s "
+                "queue_baseline=%s queue_remaining=%s active_remaining=%s",
+                gate._name.capitalize(),
+                _fmt_optional_float(last_before),
+                _fmt_optional_float(last_after),
+                _fmt_optional_float(last_delta),
+                _fmt_optional_float(est_before),
+                _fmt_optional_float(est_after),
+                _fmt_optional_float(queue_baseline),
+                _fmt_optional_float(queue_remaining),
+                _fmt_optional_float(queue_active_remaining))
         return True
     except Exception:
         logger.exception(

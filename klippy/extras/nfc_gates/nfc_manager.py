@@ -57,7 +57,7 @@ import ast
 import os
 import re
 
-from . import (hh_status, pn532_driver, reader_factory, scan_jog,
+from . import (hh_status, pn532_driver, rc522_driver, reader_factory, scan_jog,
                shared_preload, tag_handler)
 from .LED_effect_mgr import (
     EVENT_AUTO_CREATE, EVENT_RELEASE, EVENT_SPOOL_READY, EVENT_TAG_READ,
@@ -86,6 +86,8 @@ LANE_LED_TEST_DURATION = 2.0
 LANE_LED_TEST_GAP = 0.15
 LANE_LED_TEST_DEFAULT_CYCLES = 2
 LANE_LED_TEST_MAX_CYCLES = 20
+STARTUP_UNKNOWN_GATE_CHECK_DELAY = 5.0
+STARTUP_UNKNOWN_GATE_CHECK_STAGGER = 1.0
 
 
 def _spoolman_url_enabled(url):
@@ -326,6 +328,12 @@ def _reader_label(reader_type):
     return "NFC Reader (%s)" % (reader_type,)
 
 
+def _reader_wiring_hint(reader_type):
+    if reader_type == 'rc522':
+        return "check SPI wiring, cs_pin, spi_bus/software SPI pins, power, and ground"
+    return "check wiring and I2C address"
+
+
 def _lookup_objects_safe(printer, name):
     try:
         return list(printer.lookup_objects(name))
@@ -520,10 +528,14 @@ def _nfc_help(gcmd=None):
         "NFC_LED_TEST ALL=1 CYCLES=2 : Test configured lane tag-read LED effect on every enabled lane",
         "NFC GATE=<#> HELP=1 : Show commands for one per-lane reader",
         "NFC GATE=<#> STATUS : Show one per-lane reader state",
+        "NFC GATE=<#> INIT=1 : Re-run reader hardware init",
         "NFC GATE=<#> SCAN=1 : Scan hardware once, no Spoolman/Happy Hare dispatch",
         "NFC GATE=<#> JOG_SCAN=1 : Start scan-jog to find tag on a loaded spool",
         "NFC GATE=<#> LED_TEST=1 CYCLES=2 : Test configured lane tag-read LED effect",
         "NFC GATE=<#> POLL=1 : Run one full read/resolve cycle",
+        "NFC GATE=<#> APPLY=1 : Send cached spool to Happy Hare now",
+        "NFC GATE=<#> CLEAR_CACHE=1 : Clear cached spool/UID, no Happy Hare dispatch",
+        "NFC GATE=<#> HH_SYNC=1 SPOOL_ID=<n> : Seed lane cache from Happy Hare gate map",
         "NFC GATE=<#> READ=1 : Start timer polling",
         "NFC GATE=<#> READ=0 : Stop timer polling",
     ]
@@ -577,6 +589,7 @@ def _nfc_help(gcmd=None):
         lines.extend([
             "",
             "Low-level debug commands:",
+            "PN532 I2C/frame debug:",
             "NFC GATE=<#> STEP=HELP : Show PN532 low-level debug help",
             "NFC GATE=<#> STEP=WAKEUP : Write wake byte to PN532",
             "NFC GATE=<#> STEP=READY : Read PN532 ready status byte",
@@ -584,6 +597,13 @@ def _nfc_help(gcmd=None):
             "NFC GATE=<#> STEP=FIRMWARE_RESPONSE : Read firmware response",
             "NFC GATE=<#> STEP=SAM_WRITE : Send SAMConfiguration frame",
             "NFC GATE=<#> STEP=SAM_RESPONSE : Read SAMConfiguration response",
+            "RC522 SPI/register debug:",
+            "NFC_SHARED RC522_DUMP_REGS=1 : Read key RC522 registers",
+            "NFC_SHARED RC522_REGISTER=TxControlReg : Read one RC522 register",
+            "NFC_SHARED RC522_REGISTER=TxControlReg VALUE=83 : Write one RC522 register",
+            "NFC_SHARED RC522_ANTENNA_ENABLE=1 : Enable RC522 antenna TX bits",
+            "NFC_SHARED RC522_TAG_WAKE=1 : Run a 7-bit REQA tag-wake probe",
+            "NFC_SHARED RC522_FIFO_TRANSCEIVE='93 20' BIT_FRAMING=0 : Raw FIFO transceive",
         ])
     return lines
 
@@ -907,9 +927,13 @@ class NFCGate:
         self._hh_confirmed_spool = None  # last spool Happy Hare acknowledged; enables _check_hh_cleared
         self._hh_load_paused     = False  # True while Happy Hare owns this gate assignment
         self._failed     = False
-        self._klipper    = KlipperInterface(self.printer, self.reactor, self._debug, name=self._name)
+        self._klipper    = KlipperInterface(
+            self.printer, self.reactor, self._debug, name=self._name,
+            spoolman_enabled=self._spoolman is not None)
         self._polling    = False
         self._poll_timer    = self.reactor.register_timer(self._poll_timer_event)
+        self._startup_check_timer = self.reactor.register_timer(
+            self._startup_check_unknown_gate_event)
         self._warning_timer = self.reactor.register_timer(
             self._warning_timer_event)
         self._shared_led_failsafe_timer = self.reactor.register_timer(
@@ -1165,8 +1189,11 @@ class NFCGate:
             "  NFC GATE=%d READ=1    - start timer polling" % self._gate,
             "  NFC GATE=%d READ=0    - stop timer polling" % self._gate,
         ]
-        if self._low_level_debug:
+        if self._low_level_debug and self._reader_type == 'pn532':
             lines.extend(pn532_driver.low_level_debug_help_lines(
+                "NFC GATE=%d" % self._gate))
+        if self._low_level_debug and self._reader_type == 'rc522':
+            lines.extend(rc522_driver.low_level_debug_help_lines(
                 "NFC GATE=%d" % self._gate))
         gcmd.respond_info('\n'.join(lines))
 
@@ -1185,17 +1212,18 @@ class NFCGate:
                 gcmd.respond_info(color_console_tags(
                     "NFC[%s]: no tag detected" % self._name))
                 return
+            sens_res = int(target_info.get('sens_res', 0) or 0)
+            sak = target_info.get('sak')
+            sak_text = "N/A" if sak is None else "0x%02X" % int(sak)
             logger.info(
-                "[%s]: UID=%s Tg=%s SENS_RES=0x%04X SAK=0x%02X UIDLen=%d",
+                "[%s]: UID=%s Tg=%s SENS_RES=0x%04X SAK=%s UIDLen=%d",
                 self._name, target_info['uid'], target_info['target'],
-                target_info['sens_res'], target_info['sak'],
-                target_info['uid_length'])
+                sens_res, sak_text, target_info['uid_length'])
             gcmd.respond_info(
                 color_console_tags(
-                    "NFC[%s]: UID=%s Tg=%s SENS_RES=0x%04X SAK=0x%02X UIDLen=%d"
+                    "NFC[%s]: UID=%s Tg=%s SENS_RES=0x%04X SAK=%s UIDLen=%d"
                     % (self._name, target_info['uid'], target_info['target'],
-                       target_info['sens_res'], target_info['sak'],
-                       target_info['uid_length'])))
+                       sens_res, sak_text, target_info['uid_length'])))
         finally:
             if hasattr(self._reader, '_release_current_target'):
                 self._reader._release_current_target(reason="manual_scan")
@@ -1211,8 +1239,9 @@ class NFCGate:
                 logger.info("[%s]: %s OK", self._name, reader_label)
             else:
                 logger.error(
-                    "[%s]: %s did not respond — check wiring and I2C address",
-                    self._name, reader_label)
+                    "[%s]: %s did not respond — %s",
+                    self._name, reader_label,
+                    _reader_wiring_hint(self._reader_type))
             gcmd.respond_info(color_console_tags(
                 "%s NFC[%s]: %s %s" %
                 ("[OK]" if alive else "[WARN]", self._name, reader_label,
@@ -1589,6 +1618,31 @@ class NFCGate:
             % (self._name, spool_id, self._gate)))
 
     def _cmd_low_level_debug(self, gcmd):
+        if rc522_driver.low_level_debug_requested(gcmd):
+            if self._polling:
+                self._polling = False
+                self.reactor.update_timer(self._poll_timer, self.reactor.NEVER)
+                gcmd.respond_info(color_console_tags(
+                    "NFC[%s]: polling paused for low-level RC522 debug" %
+                    self._name))
+            try:
+                command_base = (
+                    "NFC_SHARED" if self._shared else
+                    "NFC GATE=%d" % self._gate)
+                return rc522_driver.run_low_level_debug(
+                    gcmd, self._reader, self._name, command_base,
+                    self._low_level_debug)
+            except Exception as e:
+                gcmd.respond_info(color_console_tags(
+                    "NFC[%s]: RC522 low-level debug failed: %s"
+                    % (self._name, e)))
+                return True
+        if (pn532_driver.low_level_debug_requested(gcmd)
+                and self._reader_type != 'pn532'):
+            gcmd.respond_info(color_console_tags(
+                "NFC[%s]: PN532 low-level commands are not valid for "
+                "reader_type=%s" % (self._name, self._reader_type)))
+            return True
         if pn532_driver.low_level_debug_requested(gcmd) and self._polling:
             self._polling = False
             self.reactor.update_timer(self._poll_timer, self.reactor.NEVER)
@@ -1867,6 +1921,73 @@ class NFCGate:
             self.reactor.monotonic() + 2.0
         )
 
+    def _startup_run_check_gate(self, gate_number, reason):
+        script = "MMU_CHECK_GATE GATE=%d" % gate_number
+        try:
+            logger.info("[%s]: startup check-gate — %s; running %s",
+                        self._name, reason, script)
+            self._gcode.run_script(script)
+            return True
+        except Exception as e:
+            logger.warning("[%s]: startup check-gate failed (%s): %s",
+                           self._name, script, e)
+            return False
+
+    def _startup_check_unknown_gate(self, eventtime):
+        """Ask Happy Hare to classify this gate if it still reports unknown."""
+        if self._gcode is None:
+            return
+        if self._is_printing():
+            logger.info(
+                "[%s]: gate %d — startup check-gate skipped while printing",
+                self._name, self._gate)
+            return
+
+        hh = self._read_hh_status(eventtime)
+        if not hh.present or self._gate >= hh.gate_count:
+            return
+        if hh.status != -1:
+            return
+        if not hh.idle:
+            logger.info(
+                "[%s]: gate %d — startup check-gate skipped because "
+                "Happy Hare is busy (action=%s)",
+                self._name, self._gate, hh.action)
+            return
+        if hh.filament_pos != hh_status.FILAMENT_POS_UNLOADED:
+            logger.info(
+                "[%s]: gate %d — startup check-gate skipped because "
+                "filament is not parked (filament_pos=%d)",
+                self._name, self._gate, hh.filament_pos)
+            return
+
+        if self._startup_run_check_gate(
+                self._gate,
+                "Happy Hare reports gate %d status=-1" % self._gate):
+            refreshed = self._read_hh_status(self.reactor.monotonic())
+            logger.info(
+                "[%s]: gate %d — startup check-gate complete; "
+                "Happy Hare status=%s spool=%s",
+                self._name, self._gate, refreshed.status, refreshed.spool)
+
+    def _startup_check_unknown_gate_event(self, eventtime):
+        was_polling = self._polling
+        if was_polling:
+            self.reactor.update_timer(self._poll_timer, self.reactor.NEVER)
+        try:
+            self._startup_check_unknown_gate(eventtime)
+            seed_time = self.reactor.monotonic()
+            self._seed_cache_from_hh(seed_time)
+            hh = self._read_hh_status(seed_time)
+            if hh.present and self._gate < hh.gate_count:
+                self._prev_gate_status = hh.status
+        finally:
+            if was_polling and not self._failed:
+                self.reactor.update_timer(
+                    self._poll_timer,
+                    self.reactor.monotonic() + self._poll_interval)
+        return self.reactor.NEVER
+
     def _delayed_init(self, eventtime):
         """Initialise the NFC Reader after other I2C devices have settled.
 
@@ -1887,8 +2008,9 @@ class NFCGate:
             else:
                 self._failed = True
                 logger.error(
-                    "[%s]: %s did not respond — check wiring and I2C address",
-                    self._name, reader_label)
+                    "[%s]: %s did not respond — %s",
+                    self._name, reader_label,
+                    _reader_wiring_hint(self._reader_type))
         except Exception as e:
             self._failed = True
             logger.error("[%s]: init error: %s", self._name, e)
@@ -1897,24 +2019,39 @@ class NFCGate:
         # after restart does not re-dispatch a spool Happy Hare already knows about.
         # Shared reader has no Happy Hare gate assignment to seed and no scan-jog edge detector.
         if not self._failed and not self._shared:
-            self._seed_cache_from_hh(eventtime)
+            seed_time = self.reactor.monotonic()
+            self._seed_cache_from_hh(seed_time)
             # Bootstrap the scan-jog edge detector with the current gate status
             # so a pre-loaded gate never triggers a scan on the first poll.
-            hh = self._read_hh_status(eventtime)
+            hh = self._read_hh_status(seed_time)
             if hh.present and self._gate < hh.gate_count:
                 self._prev_gate_status = hh.status
+            if self._spoolman is None:
+                delay = (STARTUP_UNKNOWN_GATE_CHECK_DELAY
+                         + (self._gate
+                            * STARTUP_UNKNOWN_GATE_CHECK_STAGGER))
+                self.reactor.update_timer(
+                    self._startup_check_timer,
+                    self.reactor.monotonic() + delay)
+                if self._debug >= 3:
+                    logger.info(
+                        "[%s]: gate %d — Spoolman disabled; startup "
+                        "unknown-gate check scheduled in %.1fs",
+                        self._name, self._gate, delay)
 
         if self._gcode is not None:
             if self._failed:
                 init_cmd = ("NFC_SHARED INIT=1" if self._shared
                             else "NFC GATE=%d INIT=1" % self._gate)
                 logger.warning(
-                    "[%s]: not ready — check wiring. Run %s after fixing.",
-                    self._name, init_cmd)
+                    "[%s]: not ready — %s. Run %s after fixing.",
+                    self._name, _reader_wiring_hint(self._reader_type),
+                    init_cmd)
                 self._gcode.respond_info(scan_jog._color_tags(
-                    "[WARN] NFC[%s]: not ready — check wiring. "
+                    "[WARN] NFC[%s]: not ready — %s. "
                     "Run %s after fixing."
-                    % (self._name, init_cmd)))
+                    % (self._name, _reader_wiring_hint(self._reader_type),
+                       init_cmd)))
             else:
                 if self._shared:
                     seed_note = ""
@@ -1957,6 +2094,8 @@ class NFCGate:
                          self._name)
         self._polling = False
         self.reactor.update_timer(self._poll_timer, self.reactor.NEVER)
+        self.reactor.update_timer(self._startup_check_timer,
+                                  self.reactor.NEVER)
         if self._shared and self._shared_pending_spool is None:
             self._shared_restore_hh_leds()
         if self._scan_timer is not None:
@@ -2081,7 +2220,8 @@ class NFCGate:
         # Scan-jog gate-status edge detection.
         # Reads Happy Hare gate_status on every tick — Python dict only, no I2C.
         # When gate is empty (curr==0) skip the I2C read entirely.
-        # On < 1 -> >=1 transition with Happy Hare idle and not printing, enter scan mode.
+        # On 0 -> >=1 transition with Happy Hare idle and not printing, enter scan mode.
+        # A -1 -> >=1 transition is Happy Hare resolving an unknown state, not a new load.
         if self._scan_enabled:
             hh = self._read_hh_status(eventtime)
             if hh.present and self._gate < hh.gate_count:
@@ -2136,8 +2276,9 @@ class NFCGate:
                             self._name, self._gate)
                         return self.reactor.monotonic() + 1.0
                     return self.reactor.monotonic() + self._poll_interval
-                # 0→1 edge: arm pending flag and let Happy Hare fully settle
-                if prev < 1  and curr >= 1:
+                # 0→1 edge: arm pending flag and let Happy Hare fully settle.
+                # Do not treat -1→1 as a preload; that is unknown-state recovery.
+                if prev == hh_status.GATE_EMPTY and curr >= 1:
                     self._scan_pending = True
                     self._scan_deferred_notified = False
                     self._scan_idle_ready_time = 0.0
@@ -2364,6 +2505,18 @@ class NFCGate:
 
     def _poll_hh_pause_check(self):
         """Suspend polling while Happy Hare says filament is still present."""
+        if not self._scan_mode:
+            hh = self._read_hh_status()
+            if hh.present and hh.available:
+                if not self._hh_load_paused:
+                    self._hh_load_paused = True
+                    logger.info(
+                        "[%s]: gate %d — Happy Hare reports filament "
+                        "present (status=%s spool=%s); suspending NFC poll "
+                        "until ejected",
+                        self._name, self._gate, hh.status, hh.spool)
+                self._state.miss_count = 0
+                return True
         if (not self._scan_mode
                 and self._hh_gate_matches_current_spool()
                 and self._state.current_spool is not None):
@@ -2422,8 +2575,12 @@ class NFCGate:
                 action_str = "REMOVED  (tag absent for %d consecutive polls)" % (
                     self._state.absent_threshold,)
             elif etype == EVENT_UID_ONLY:
-                action_str = "NO_SPOOL  (uid=%s not registered in Spoolman)" % (
-                    event[2],)
+                if self._spoolman is None:
+                    action_str = "NO_SPOOL  (uid=%s no metadata/spool assignment)" % (
+                        event[2],)
+                else:
+                    action_str = "NO_SPOOL  (uid=%s not registered in Spoolman)" % (
+                        event[2],)
             else:
                 action_str = str(etype)
         logger.debug("[%s]: POLL  gate=%-2d  %-28s  →  %s",
@@ -2683,6 +2840,8 @@ class NFCGate:
         else:
             poll_state = "not polling"
         hh = self._read_hh_status()
+        if hh.present and hh.available and not self._scan_mode:
+            poll_state = "polling suspended"
         hh_label = hh.label()
         sync_note = ''
         nfc_spool = self._state.current_spool
@@ -2711,17 +2870,10 @@ class NFCGate:
             meta = tag.meta if tag is not None else {}
             material = (meta or {}).get('material', '')
             color = (meta or {}).get('color_hex', '')
-            spool_identity = (
-                getattr(tag, 'spool_identity', None)
-                if tag is not None else None)
-            if not spool_identity:
-                spool_identity = (meta or {}).get('spool_identity') or 'None'
             return _status_html_words(
-                "  %s:  tag %s  metadata material=%s color=%s "
-                "spool_identity=%s   [%s]%s  [%s]"
+                "  %s:  tag %s  metadata material=%s color=%s   [%s]%s  [%s]"
                 % (label, self._state.current_uid,
-                   material, color, spool_identity, poll_state, sync_note,
-                   hh_label))
+                   material, color, poll_state, sync_note, hh_label))
         if self._state.current_spool is not None:
             return _status_html_words(
                 "  %s:  spool %-2d  UID %s   [%s]%s   [%s]"
@@ -3180,6 +3332,8 @@ class NFCGate:
             % self._name))
 
     def cmd_NFC_SHARED(self, gcmd):
+        if self._cmd_low_level_debug(gcmd):
+            return
         read_value = gcmd.get("READ", None)
         if read_value is not None:
             self._set_reading(gcmd, gcmd.get_int("READ", minval=0, maxval=1) == 1)
@@ -3266,29 +3420,32 @@ class NFCGate:
         self._shared_help(gcmd)
 
     def _shared_help(self, gcmd):
-        gcmd.respond_info(
-            "NFC_SHARED commands:\n"
-            "  Add =1 to action flags; Klipper rejects bare forms like NFC_SHARED CANCEL.\n"
-            "  NFC_SHARED READ=1          - start polling (rejected while printing)\n"
-            "  NFC_SHARED READ=0          - stop polling (keeps pending spool)\n"
-            "  NFC_SHARED STATUS=1        - show detailed shared reader state\n"
-            "  NFC_SHARED SUMMARY=1       - show one-line shared reader state\n"
-            "  NFC_SHARED HELP=1          - show this help\n"
-            "  NFC_SHARED CANCEL=1        - cancel pending spool and stop polling\n"
-            "  NFC_SHARED REPLACE=1       - discard pending spool and scan another\n"
-            "  NFC_SHARED RESET=1         - clear shared state, restore LEDs, and poll\n"
-            "  NFC_SHARED LED_TEST=1      - test configured shared tag-read LED effect\n"
-            "\n"
-            "Advanced shared-reader commands:\n"
-            "  NFC_SHARED CLEAR=1         - clear pending state and stop polling\n"
-            "  NFC_SHARED PRELOAD_CHECK=1 - Happy Hare hook command; approve NEXT_SPOOLID if valid\n"
-            "  NFC_SHARED PRELOAD_COMMIT=1 SPOOL_ID=<n> - Happy Hare hook command; clear pending after NEXT_SPOOLID\n"
-            "  NFC_SHARED PRELOAD_CLEAR_ASSIGNED=1 SPOOL_ID=<n> GATE=<n> - Happy Hare hook command; clear already-assigned shared spool\n"
-            "  NFC_SHARED POLL=1          - run one full read/resolve cycle (skips printing)\n"
-            "  NFC_SHARED SCAN=1          - raw hardware scan only (skips printing)\n"
-            "  NFC_SHARED INIT=1          - re-run NFC Reader init; resumes startup polling if enabled\n"
-            "  NFC_SHARED CLEAR_CACHE=1   - clear tag cache (keeps pending spool)"
-        )
+        lines = [
+            "NFC_SHARED commands:",
+            "  Add =1 to action flags; Klipper rejects bare forms like NFC_SHARED CANCEL.",
+            "  NFC_SHARED READ=1          - start polling (rejected while printing)",
+            "  NFC_SHARED READ=0          - stop polling (keeps pending spool)",
+            "  NFC_SHARED STATUS=1        - show detailed shared reader state",
+            "  NFC_SHARED SUMMARY=1       - show one-line shared reader state",
+            "  NFC_SHARED HELP=1          - show this help",
+            "  NFC_SHARED CANCEL=1        - cancel pending spool and stop polling",
+            "  NFC_SHARED REPLACE=1       - discard pending spool and scan another",
+            "  NFC_SHARED RESET=1         - clear shared state, restore LEDs, and poll",
+            "  NFC_SHARED LED_TEST=1      - test configured shared tag-read LED effect",
+            "",
+            "Advanced shared-reader commands:",
+            "  NFC_SHARED CLEAR=1         - clear pending state and stop polling",
+            "  NFC_SHARED PRELOAD_CHECK=1 - Happy Hare hook command; approve NEXT_SPOOLID if valid",
+            "  NFC_SHARED PRELOAD_COMMIT=1 SPOOL_ID=<n> - Happy Hare hook command; clear pending after NEXT_SPOOLID",
+            "  NFC_SHARED PRELOAD_CLEAR_ASSIGNED=1 SPOOL_ID=<n> GATE=<n> - Happy Hare hook command; clear already-assigned shared spool",
+            "  NFC_SHARED POLL=1          - run one full read/resolve cycle (skips printing)",
+            "  NFC_SHARED SCAN=1          - raw hardware scan only (skips printing)",
+            "  NFC_SHARED INIT=1          - re-run NFC Reader init; resumes startup polling if enabled",
+            "  NFC_SHARED CLEAR_CACHE=1   - clear tag cache (keeps pending spool)",
+        ]
+        if self._low_level_debug and self._reader_type == 'rc522':
+            lines.extend(rc522_driver.low_level_debug_help_lines("NFC_SHARED"))
+        gcmd.respond_info('\n'.join(lines))
 
     def get_status(self, _eventtime=None):
         if not getattr(self, '_enabled', True):
