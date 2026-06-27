@@ -23,7 +23,8 @@ except ImportError:
         return text
 
 
-DECODE_RETRY_SETTLE_DELAY = 1.0
+# Short settle after a decode-retry jog/backup before trying rich tag reads again.
+DECODE_RETRY_SETTLE_DELAY = 0.2
 SCAN_JOG_SUBSTEPS = 3
 LEFT_NEIGHBOR_CLEARANCE_MM = 75.0
 LEFT_NEIGHBOR_CLEARANCE_RETRIES = 3
