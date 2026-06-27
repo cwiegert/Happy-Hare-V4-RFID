@@ -314,7 +314,7 @@ def record_continuous_uid_hit(gate, uid, start_pos, end_pos):
     low = min(start_pos, end_pos)
     high = max(start_pos, end_pos)
     center = (low + high) * 0.5
-    hits.append((uid, low, high))
+    hits.append((uid, center, low, high))
     if gate._debug >= 4:
         window = continuous_uid_hit_window(gate, uid)
         if window is not None:
@@ -335,14 +335,15 @@ def record_continuous_uid_hit(gate, uid, start_pos, end_pos):
 
 def continuous_uid_hit_window(gate, uid):
     matching = [
-        (low, high)
-        for hit_uid, low, high in getattr(gate, '_scan_continuous_uid_hits', [])
+        (center, low, high)
+        for hit_uid, center, low, high
+        in getattr(gate, '_scan_continuous_uid_hits', [])
         if hit_uid == uid
     ]
     if not matching:
         return None
-    low = min(hit_low for hit_low, _hit_high in matching)
-    high = max(hit_high for _hit_low, hit_high in matching)
+    low = min(hit_center for hit_center, _hit_low, _hit_high in matching)
+    high = max(hit_center for hit_center, _hit_low, _hit_high in matching)
     return low, high, (low + high) * 0.5, len(matching)
 
 
@@ -389,6 +390,24 @@ def log_continuous_uid_hit_window(gate, uid, label):
         "center=%.1fmm hits=%d current=%.1fmm",
         gate._name.capitalize(), label, uid, low, high, center, count,
         getattr(gate, '_scan_mm_total', 0.0))
+
+
+def should_backup_before_rich_read(gate, uid):
+    """Prefer the observed UID hit-window center before rich tag reads."""
+    if not getattr(gate, '_tag_parsing', False):
+        return False
+    if getattr(gate, '_scan_continuous_overshoot_backed_up', False):
+        return False
+    window = continuous_uid_hit_window(gate, uid)
+    if window is None:
+        return False
+    if gate._debug >= 3:
+        low, high, center, count = window
+        logger.info(
+            "[%s]: continuous scan uid=%s has hit_window=%.1f..%.1fmm "
+            "center=%.1fmm hits=%d; backing up before rich read",
+            gate._name.capitalize(), uid, low, high, center, count)
+    return True
 
 
 def log_continuous_queue_remaining(gate, label):
@@ -1008,7 +1027,12 @@ def continuous_step_event(gate, eventtime):
         tag_found = resolve_continuous_pending_uid(gate, now)
         if not tag_found:
             if getattr(gate, '_tag_parsing', False):
-                if full_poll_after_continuous_probe_resolved(gate):
+                uid = getattr(gate, '_scan_continuous_pending_uid', None)
+                if should_backup_before_rich_read(gate, uid):
+                    if queue_continuous_overshoot_backup(gate, now):
+                        return (gate.reactor.monotonic()
+                                + gate._scan_continuous_poll_interval)
+                elif full_poll_after_continuous_probe_resolved(gate):
                     tag_found = True
                 elif retry_continuous_overshoot_position(gate, now):
                     return gate.reactor.monotonic() + gate._scan_continuous_poll_interval
