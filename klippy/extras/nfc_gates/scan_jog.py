@@ -160,6 +160,16 @@ def manual_jog_scan(gate, gcmd):
         logger.warning(msg)
         gcmd.respond_info(_color_tags(msg))
         return
+    force = bool(gcmd.get_int("FORCE", 0, minval=0, maxval=1))
+    if (not trusted_auto and not force
+            and gate._state.current_spool is not None
+            and gate._state.current_spool is not DIRECT_METADATA_SPOOL):
+        msg = ("[OK] NFC[%s]: spool %s already detected; "
+               "jog_scan skipped (use FORCE=1 to rescan)"
+               % (gate._name, gate._state.current_spool))
+        logger.info(msg)
+        gcmd.respond_info(_color_tags(msg))
+        return
     ok, reason, max_mm = gate._prepare_scan_jog()
     if not ok:
         msg = "[WARN] NFC[%s]: scan-jog not available while %s" % (
@@ -838,6 +848,20 @@ def run_hh_script(gate, script, suppress_visual=True):
             gcode.run_script(script)
     else:
         gcode.run_script(script)
+
+
+class _NoopContext:
+    def __enter__(self):
+        return None
+
+    def __exit__(self, _exc_type, _exc, _tb):
+        return False
+
+
+def suppress_hh_visual_log(mmu):
+    if mmu is not None and hasattr(mmu, 'wrap_suppress_visual_log'):
+        return mmu.wrap_suppress_visual_log()
+    return _NoopContext()
 
 
 def resume_poll_after_rewind(gate):
@@ -2171,16 +2195,17 @@ def run_direct_homing_jog(gate, mm, speed=None, accel=None):
     move_speed = get_speed(gate) if speed is None else speed
     move_accel = accel
     start_time = gate.reactor.monotonic()
-    with mmu.wrap_sync_gear_to_extruder():
-        actual, _homed, _measured, _delta = mmu.move_filament(
-            "NFC scan homing move",
-            mm,
-            speed=move_speed,
-            accel=move_accel,
-            motor="gear",
-            homing_move=(1 if mm >= 0.0 else -1),
-            endstop_name=nfc_endstop_name(gate),
-            wait=True)
+    with suppress_hh_visual_log(mmu):
+        with mmu.wrap_sync_gear_to_extruder():
+            actual, _homed, _measured, _delta = mmu.move_filament(
+                "NFC scan homing move",
+                mm,
+                speed=move_speed,
+                accel=move_accel,
+                motor="gear",
+                homing_move=(1 if mm >= 0.0 else -1),
+                endstop_name=nfc_endstop_name(gate),
+                wait=True)
     elapsed = nfc_homing_elapsed(
         gate, max(0.0, gate.reactor.monotonic() - start_time))
     actual = corrected_homing_actual(
@@ -2319,14 +2344,15 @@ def run_direct_mmu_move(gate, mm, speed=None, accel=None):
     if (mmu is None or not hasattr(mmu, 'move_filament')
             or not hasattr(mmu, 'wrap_sync_gear_to_extruder')):
         return False
-    with mmu.wrap_sync_gear_to_extruder():
-        mmu.move_filament(
-            "NFC scan move",
-            mm,
-            speed=speed,
-            accel=accel,
-            motor="gear",
-            wait=True)
+    with suppress_hh_visual_log(mmu):
+        with mmu.wrap_sync_gear_to_extruder():
+            mmu.move_filament(
+                "NFC scan move",
+                mm,
+                speed=speed,
+                accel=accel,
+                motor="gear",
+                wait=True)
     return True
 
 
