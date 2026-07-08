@@ -1308,8 +1308,8 @@ def continuous_step_event(gate, eventtime):
         "[%s]: continuous %s queued %.1fmm  scan position %.1f / %.1fmm "
         "(requested %.1fmm; next read in %.2fs; call returned in %.2fs, "
         "remaining move %.2fs, basis=%s)",
-        gate._name.capitalize(), move_source, actual_move, move,
-        gate._scan_mm_total, gate._scan_max_mm,
+        gate._name.capitalize(), move_source, actual_move,
+        gate._scan_mm_total, gate._scan_max_mm, move,
         gate._scan_next_chunk_time - gate.reactor.monotonic(),
         command_elapsed, remaining_duration, timing_basis)
     return gate.reactor.monotonic()

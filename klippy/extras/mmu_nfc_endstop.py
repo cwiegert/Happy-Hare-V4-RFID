@@ -102,9 +102,18 @@ class MmuNfcEndstop:
             return self.reactor.NEVER
 
         uid = None
+        target_info = None
+        used_read_target = False
         try:
-            uid = self._get_nfc_gate()._reader.read_tag(
-                timeout=self.poll_interval)
+            reader = self._get_nfc_gate()._reader
+            read_target = getattr(reader, 'read_target', None)
+            if read_target is not None:
+                used_read_target = True
+                target_info = read_target(timeout=self.poll_interval)
+                if target_info is not None:
+                    uid = target_info.get('uid')
+            else:
+                uid = reader.read_tag(timeout=self.poll_interval)
             self._last_poll_error = None
         except Exception as e:
             if str(e) != self._last_poll_error:
@@ -113,10 +122,42 @@ class MmuNfcEndstop:
                     "MMU: NFC virtual endstop '%s' poll failed",
                     self.endstop_name)
 
-        self.trigger_handler(self.reactor.monotonic(), uid is not None)
+        if uid is not None:
+            self._cache_scan_uid(uid, target_info)
+        triggered = uid is not None
+        self.trigger_handler(self.reactor.monotonic(), triggered)
+        if triggered and used_read_target:
+            self._release_reader_target()
         if not self._homing:
             return self.reactor.NEVER
-        return self.reactor.monotonic() + 0.001
+        return self.reactor.monotonic() + self.poll_interval
+
+    def _cache_scan_uid(self, uid, target_info=None):
+        nfc_gate = self._get_nfc_gate()
+        if not getattr(nfc_gate, '_scan_mode', False):
+            return
+        nfc_gate._scan_continuous_pending_uid = uid
+        nfc_gate._scan_continuous_pending_target_info = (
+            dict(target_info) if isinstance(target_info, dict) else None)
+        nfc_gate._scan_continuous_tag_pending = True
+        if getattr(nfc_gate, '_debug', 0) >= 3:
+            logging.info(
+                "MMU: NFC virtual endstop '%s' cached scan UID %s",
+                self.endstop_name, uid)
+
+    def _release_reader_target(self):
+        release = getattr(self._get_nfc_gate()._reader,
+                          '_release_current_target', None)
+        if release is None:
+            return
+        try:
+            release(reason="nfc_virtual_endstop")
+        except TypeError:
+            release()
+        except Exception:
+            logging.exception(
+                "MMU: NFC virtual endstop '%s' target release failed",
+                self.endstop_name)
 
     def _reactor_to_print_time(self, eventtime):
         mcu = self.printer.lookup_object('mcu', None)
