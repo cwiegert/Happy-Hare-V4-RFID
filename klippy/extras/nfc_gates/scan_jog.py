@@ -288,6 +288,29 @@ def homing_distance_from_elapsed(gate, mm, elapsed, speed=None, accel=None):
     return estimated if mm >= 0.0 else -estimated
 
 
+def corrected_homing_actual(gate, mm, actual, elapsed, speed=None, accel=None):
+    reported = float(actual or 0.0)
+    estimated = homing_distance_from_elapsed(
+        gate, mm, elapsed, speed=speed, accel=accel)
+    reported_abs = abs(reported)
+    estimated_abs = abs(estimated)
+    requested_abs = abs(float(mm))
+    use_estimate = reported_abs < 0.001
+    use_estimate = use_estimate or (
+        requested_abs > 0.0
+        and estimated_abs > 0.001
+        and reported_abs >= requested_abs - 0.001
+        and estimated_abs < reported_abs - 1.0)
+    if not use_estimate:
+        return reported
+    if gate._debug >= 3:
+        logger.info(
+            "[%s]: NFC homing move reported %.1fmm; "
+            "estimated %.1fmm from %.2fs elapsed",
+            gate._name.capitalize(), reported, estimated, elapsed)
+    return estimated
+
+
 def continuous_probe_uid(gate):
     """Lightweight UID-only probe while a continuous chunk is in flight."""
     uid = None
@@ -799,7 +822,7 @@ def restore_active_gate(gate):
     if gcode is None:
         return
     try:
-        gcode.run_script("MMU_SELECT GATE=%d" % previous_gate)
+        gcode.run_script("MMU_SELECT GATE=%d QUIET=1" % previous_gate)
     except Exception as e:
         logger.warning(
             "[%s]: gate %d scan mode — failed to restore "
@@ -1384,10 +1407,10 @@ def shift_left_neighbor(gate, left_gate, identity):
         return False
     try:
         gcode.run_script(
-            "MMU_SELECT GATE=%d\n"
+            "MMU_SELECT GATE=%d QUIET=1\n"
             "MMU_TEST_MOVE MOVE=%.2f QUIET=1\n"
             "M400\n"
-            "MMU_SELECT GATE=%d"
+            "MMU_SELECT GATE=%d QUIET=1"
             % (left_gate, LEFT_NEIGHBOR_CLEARANCE_MM, gate._gate))
     except Exception as e:
         logger.warning(
@@ -1431,11 +1454,11 @@ def restore_left_neighbor(gate):
            % left_gate)
     logger.info(msg)
     try:
-        gcode.run_script("MMU_SELECT GATE=%d" % left_gate)
+        gcode.run_script("MMU_SELECT GATE=%d QUIET=1" % left_gate)
         gate._console(msg)
         gcode.run_script(
             "_MMU_STEP_UNLOAD_GATE\n"
-            "MMU_SELECT GATE=%d" % gate._gate)
+            "MMU_SELECT GATE=%d QUIET=1" % gate._gate)
     except Exception as e:
         logger.warning(
             "[%s]: gate %d scan mode — failed to restore left "
@@ -2040,7 +2063,7 @@ def run_jog(gate, mm):
     before = mmu_gear_position(gate)
     if not gate._scan_gate_selected:
         gate._scan_gate_selected = True
-        gcode.run_script("MMU_SELECT GATE=%d\nMMU_TEST_MOVE MOVE=%.2f QUIET=1"
+        gcode.run_script("MMU_SELECT GATE=%d QUIET=1\nMMU_TEST_MOVE MOVE=%.2f QUIET=1"
                          % (gate._gate, mm))
     else:
         gcode.run_script("MMU_TEST_MOVE MOVE=%.2f QUIET=1" % mm)
@@ -2117,14 +2140,8 @@ def run_direct_homing_jog(gate, mm, speed=None, accel=None):
             endstop_name=nfc_endstop_name(gate),
             wait=True)
     elapsed = max(0.0, gate.reactor.monotonic() - start_time)
-    if abs(float(actual or 0.0)) < 0.001:
-        actual = homing_distance_from_elapsed(
-            gate, mm, elapsed, speed=move_speed, accel=move_accel)
-        if gate._debug >= 3 and abs(actual) > 0.0:
-            logger.info(
-                "[%s]: NFC homing move reported 0.0mm; "
-                "estimated %.1fmm from %.2fs elapsed",
-                gate._name.capitalize(), actual, elapsed)
+    actual = corrected_homing_actual(
+        gate, mm, actual, elapsed, speed=move_speed, accel=move_accel)
     gate._scan_last_jog_actual_mm = actual
     return True
 
@@ -2136,7 +2153,7 @@ def run_homing_jog(gate, mm, speed=None, accel=None):
     before = mmu_gear_position(gate)
     if not gate._scan_gate_selected:
         gate._scan_gate_selected = True
-        gcode.run_script("MMU_SELECT GATE=%d" % gate._gate)
+        gcode.run_script("MMU_SELECT GATE=%d QUIET=1" % gate._gate)
     else:
         gcode = None
     if run_direct_homing_jog(gate, mm, speed=speed, accel=accel):
@@ -2146,17 +2163,10 @@ def run_homing_jog(gate, mm, speed=None, accel=None):
     start_time = gate.reactor.monotonic()
     gcode.run_script(cmd)
     gate._scan_last_jog_actual_mm = measured_jog_delta(gate, before, mm)
-    if abs(float(gate._scan_last_jog_actual_mm or 0.0)) < 0.001:
-        elapsed = max(0.0, gate.reactor.monotonic() - start_time)
-        actual = homing_distance_from_elapsed(
-            gate, mm, elapsed, speed=speed, accel=accel)
-        if abs(actual) > 0.0:
-            gate._scan_last_jog_actual_mm = actual
-            if gate._debug >= 3:
-                logger.info(
-                    "[%s]: NFC homing G-code reported 0.0mm; "
-                    "estimated %.1fmm from %.2fs elapsed",
-                    gate._name.capitalize(), actual, elapsed)
+    elapsed = max(0.0, gate.reactor.monotonic() - start_time)
+    gate._scan_last_jog_actual_mm = corrected_homing_actual(
+        gate, mm, gate._scan_last_jog_actual_mm, elapsed,
+        speed=speed, accel=accel)
     return "homing"
 
 
@@ -2254,10 +2264,26 @@ def run_continuous_jog(gate, mm):
            % (mm, gate._scan_continuous_speed, gate._scan_continuous_accel))
     if not gate._scan_gate_selected:
         gate._scan_gate_selected = True
-        gcode.run_script("MMU_SELECT GATE=%d\n%s" % (gate._gate, cmd))
+        gcode.run_script("MMU_SELECT GATE=%d QUIET=1\n%s" % (gate._gate, cmd))
     else:
         gcode.run_script(cmd)
     return "gcode"
+
+
+def run_direct_mmu_move(gate, mm, speed=None, accel=None):
+    mmu = gate.printer.lookup_object('mmu', None)
+    if (mmu is None or not hasattr(mmu, 'move_filament')
+            or not hasattr(mmu, 'wrap_sync_gear_to_extruder')):
+        return False
+    with mmu.wrap_sync_gear_to_extruder():
+        mmu.move_filament(
+            "NFC scan move",
+            mm,
+            speed=speed,
+            accel=accel,
+            motor="gear",
+            wait=True)
+    return True
 
 
 def run_direct_continuous_jog(gate, mm):
@@ -2395,6 +2421,7 @@ def run_rewind(gate):
     gcode = gate.printer.lookup_object('gcode')
     _, _, fast_rewind = _rewind_parts(gate)
     if fast_rewind > 0.0:
-        gcode.run_script("MMU_TEST_MOVE MOVE=%.2f QUIET=1\nM400"
-                         % (-fast_rewind))
+        if not run_direct_mmu_move(gate, -fast_rewind):
+            gcode.run_script("MMU_TEST_MOVE MOVE=%.2f QUIET=1\nM400"
+                             % (-fast_rewind))
     gcode.run_script("_MMU_STEP_UNLOAD_GATE")
