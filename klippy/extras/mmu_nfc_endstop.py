@@ -47,7 +47,10 @@ class MmuNfcEndstop:
         self._steppers = []
         self._trigger_completion = None
         self._last_trigger_time = None
+        self._home_start_print_time = None
+        self._home_start_reactor_time = None
         self._homing = False
+        self._triggered = True
         self._poll_timer = None
         self._last_poll_error = None
 
@@ -108,16 +111,33 @@ class MmuNfcEndstop:
                     "MMU: NFC virtual endstop '%s' poll failed",
                     self.endstop_name)
 
-        self.trigger_handler(eventtime, uid is not None)
+        self.trigger_handler(self.reactor.monotonic(), uid is not None)
         if not self._homing:
             return self.reactor.NEVER
         return self.reactor.monotonic() + 0.001
 
+    def _reactor_to_print_time(self, eventtime):
+        mcu = self.printer.lookup_object('mcu', None)
+        if mcu is not None:
+            try:
+                print_time = mcu.estimated_print_time(eventtime)
+                if self._home_start_print_time is not None:
+                    print_time = max(self._home_start_print_time, print_time)
+                return print_time
+            except Exception:
+                pass
+        if (self._home_start_print_time is not None
+                and self._home_start_reactor_time is not None):
+            return (self._home_start_print_time
+                    + max(0.0, eventtime - self._home_start_reactor_time))
+        return eventtime
+
     def trigger_handler(self, eventtime, state):
         self._note_filament_present(eventtime, state)
-        if (self._homing and state and self._trigger_completion is not None
+        if (self._homing and state == self._triggered
+                and self._trigger_completion is not None
                 and self._last_trigger_time is None):
-            self._last_trigger_time = eventtime
+            self._last_trigger_time = self._reactor_to_print_time(eventtime)
             self._homing = False
             self._trigger_completion.complete(True)
 
@@ -143,7 +163,10 @@ class MmuNfcEndstop:
         self._trigger_completion = self.reactor.completion()
         self._last_trigger_time = None
         self._last_poll_error = None
+        self._home_start_print_time = print_time
+        self._home_start_reactor_time = self.reactor.monotonic()
         self._homing = True
+        self._triggered = bool(triggered)
         self._poll_timer = self.reactor.register_timer(
             self._poll_event, self.reactor.NOW)
         return self._trigger_completion
@@ -154,6 +177,8 @@ class MmuNfcEndstop:
             self.reactor.update_timer(self._poll_timer, self.reactor.NEVER)
             self._poll_timer = None
         self._trigger_completion = None
+        self._home_start_print_time = None
+        self._home_start_reactor_time = None
 
         if self._last_trigger_time is None:
             raise self.printer.command_error(

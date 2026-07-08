@@ -241,6 +241,53 @@ def continuous_chunk_interval(gate, mm):
     return (2.0 * accel_time) + (cruise_distance / speed)
 
 
+def distance_from_trapezoid_time(mm, elapsed, speed, accel):
+    """Estimate distance covered by a trapezoid-limited move after elapsed time."""
+    distance = abs(float(mm))
+    elapsed = max(0.0, float(elapsed))
+    if distance <= 0.0 or elapsed <= 0.0:
+        return 0.0
+    speed = max(0.001, float(speed))
+    accel = max(0.001, float(accel))
+    accel_time = speed / accel
+    accel_distance = (speed * speed) / (2.0 * accel)
+    if (2.0 * accel_distance) >= distance:
+        peak_speed = (distance * accel) ** 0.5
+        accel_time = peak_speed / accel
+        total_time = 2.0 * accel_time
+        if elapsed >= total_time:
+            travelled = distance
+        elif elapsed <= accel_time:
+            travelled = 0.5 * accel * elapsed * elapsed
+        else:
+            decel_time = total_time - elapsed
+            travelled = distance - (0.5 * accel * decel_time * decel_time)
+    else:
+        cruise_distance = distance - (2.0 * accel_distance)
+        cruise_time = cruise_distance / speed
+        total_time = (2.0 * accel_time) + cruise_time
+        if elapsed >= total_time:
+            travelled = distance
+        elif elapsed <= accel_time:
+            travelled = 0.5 * accel * elapsed * elapsed
+        elif elapsed <= (accel_time + cruise_time):
+            travelled = accel_distance + (speed * (elapsed - accel_time))
+        else:
+            decel_time = total_time - elapsed
+            travelled = distance - (0.5 * accel * decel_time * decel_time)
+    return min(distance, max(0.0, travelled))
+
+
+def homing_distance_from_elapsed(gate, mm, elapsed, speed=None, accel=None):
+    move_speed = get_speed(gate) if speed is None else speed
+    move_accel = (
+        getattr(gate, '_scan_continuous_accel', 2000.0)
+        if accel is None else accel)
+    estimated = distance_from_trapezoid_time(
+        mm, elapsed, move_speed, move_accel)
+    return estimated if mm >= 0.0 else -estimated
+
+
 def continuous_probe_uid(gate):
     """Lightweight UID-only probe while a continuous chunk is in flight."""
     uid = None
@@ -2058,6 +2105,7 @@ def run_direct_homing_jog(gate, mm, speed=None, accel=None):
         return False
     move_speed = get_speed(gate) if speed is None else speed
     move_accel = accel
+    start_time = gate.reactor.monotonic()
     with mmu.wrap_sync_gear_to_extruder():
         actual, _homed, _measured, _delta = mmu.move_filament(
             "NFC scan homing move",
@@ -2068,6 +2116,15 @@ def run_direct_homing_jog(gate, mm, speed=None, accel=None):
             homing_move=(1 if mm >= 0.0 else -1),
             endstop_name=nfc_endstop_name(gate),
             wait=True)
+    elapsed = max(0.0, gate.reactor.monotonic() - start_time)
+    if abs(float(actual or 0.0)) < 0.001:
+        actual = homing_distance_from_elapsed(
+            gate, mm, elapsed, speed=move_speed, accel=move_accel)
+        if gate._debug >= 3 and abs(actual) > 0.0:
+            logger.info(
+                "[%s]: NFC homing move reported 0.0mm; "
+                "estimated %.1fmm from %.2fs elapsed",
+                gate._name.capitalize(), actual, elapsed)
     gate._scan_last_jog_actual_mm = actual
     return True
 
@@ -2086,8 +2143,20 @@ def run_homing_jog(gate, mm, speed=None, accel=None):
         return "homing"
     if gcode is None:
         gcode = gate.printer.lookup_object('gcode')
+    start_time = gate.reactor.monotonic()
     gcode.run_script(cmd)
     gate._scan_last_jog_actual_mm = measured_jog_delta(gate, before, mm)
+    if abs(float(gate._scan_last_jog_actual_mm or 0.0)) < 0.001:
+        elapsed = max(0.0, gate.reactor.monotonic() - start_time)
+        actual = homing_distance_from_elapsed(
+            gate, mm, elapsed, speed=speed, accel=accel)
+        if abs(actual) > 0.0:
+            gate._scan_last_jog_actual_mm = actual
+            if gate._debug >= 3:
+                logger.info(
+                    "[%s]: NFC homing G-code reported 0.0mm; "
+                    "estimated %.1fmm from %.2fs elapsed",
+                    gate._name.capitalize(), actual, elapsed)
     return "homing"
 
 
