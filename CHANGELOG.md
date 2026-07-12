@@ -69,7 +69,9 @@ confirmation.
   fast path that reuses a previously resolved UID now carries the previous
   `spool_identity` along with the spool id, and level-3 logs show both the
   current lane identity and the left lane identity used for interference
-  decisions.
+  decisions. If the fast path has only a spool id and no `spool_identity`,
+  it now forces the rich tag parse instead of skipping the manufacturer-tag
+  interference check.
 - 🐛 **Default-key retry enabled and restructured** in `read_current_tag()`.
   Previously it only fired if Bambu key *derivation* succeeded and then
   every sector's *authentication* failed — meaning it silently never ran at
