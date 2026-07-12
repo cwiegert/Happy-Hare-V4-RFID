@@ -515,12 +515,14 @@ def log_continuous_queue_remaining(gate, label):
     return queue_remaining
 
 
-def _cache_continuous_resolved_uid(gate, uid, spool_id, path):
+def _cache_continuous_resolved_uid(
+        gate, uid, spool_id, path, spool_identity=None):
     tag = CurrentTag(uid=uid)
     target_info = getattr(gate, '_scan_continuous_pending_target_info', None)
     if target_info is not None:
         tag.target_info = dict(target_info)
     tag.resolution = {'path': path, 'spool_id': spool_id}
+    tag.spool_identity = spool_identity or None
     gate._state.current_tag = tag
     gate._state.current_uid = uid
     gate._state.current_spool = spool_id
@@ -552,15 +554,18 @@ def resolve_continuous_pending_uid(gate, now):
         return False
     previous_uid = getattr(gate, '_scan_previous_uid', None)
     previous_spool = getattr(gate, '_scan_previous_spool', None)
+    previous_identity = getattr(gate, '_scan_previous_spool_identity', None)
     if (uid == previous_uid and previous_spool is not None
             and previous_spool is not DIRECT_METADATA_SPOOL):
         _cache_continuous_resolved_uid(
-            gate, uid, previous_spool, 'scan_previous_uid')
+            gate, uid, previous_spool, 'scan_previous_uid',
+            spool_identity=previous_identity)
         if gate._debug >= 3:
             logger.info(
                 "[%s]: continuous scan uid=%s matched stashed UID; "
-                "using stashed spool_id=%s",
-                gate._name.capitalize(), uid, previous_spool)
+                "using stashed spool_id=%s spool_identity=%s",
+                gate._name.capitalize(), uid, previous_spool,
+                previous_identity if previous_identity else "None")
         return True
     if gate._spoolman is None:
         return False
@@ -582,7 +587,8 @@ def resolve_continuous_pending_uid(gate, now):
     if gate._debug >= 3:
         logger.info(
             "[%s]: continuous scan uid=%s resolved through Spoolman "
-            "after move complete: spool_id=%s",
+            "after move complete: spool_id=%s spool_identity=None "
+            "(UID lookup does not include parsed tag metadata)",
             gate._name.capitalize(), uid, spool_id)
     return True
 
@@ -1014,6 +1020,14 @@ def start(gate, max_mm=None):
     gate._scan_found_event = None
     gate._scan_previous_uid = gate._state.current_uid
     gate._scan_previous_spool = gate._state.current_spool
+    gate._scan_previous_spool_identity = current_spool_identity(gate)
+    if gate._debug >= 3 and gate._scan_previous_uid:
+        logger.info(
+            "[%s]: gate %d scan mode — stashed previous uid=%s "
+            "spool=%s spool_identity=%s",
+            gate._name, gate._gate, gate._scan_previous_uid,
+            gate._scan_previous_spool,
+            gate._scan_previous_spool_identity or "None")
     gate._state.current_uid   = None  # force changed event on first read
     gate._state.current_spool = None
     gate._hh_load_paused = False
@@ -1511,18 +1525,24 @@ def current_spool_identity(gate):
 def spool_identity_for_gate(gate, target_gate):
     left_nfc = gate._nfc_gate_for_gate_number(target_gate)
     if left_nfc is None:
-        if gate._debug >= 4:
-            logger.debug("[%s]: left gate %d has no NFC instance",
-                         gate._name.capitalize(), target_gate)
+        if gate._debug >= 3:
+            logger.info("[%s]: left gate %d has no NFC instance for "
+                        "spool_identity lookup",
+                        gate._name.capitalize(), target_gate)
         return None
     left_tag = getattr(left_nfc._state, 'current_tag', None)
+    left_uid = getattr(left_nfc._state, 'current_uid', None)
+    left_spool = getattr(left_nfc._state, 'current_spool', None)
     left_identity = (
         getattr(left_tag, 'spool_identity', None)
         if left_tag is not None else None)
     if not left_identity:
-        if gate._debug >= 4:
-            logger.debug("[%s]: left gate %d NFC cache has no spool_identity",
-                         gate._name.capitalize(), target_gate)
+        if gate._debug >= 3:
+            logger.info(
+                "[%s]: left gate %d spool_identity lookup — "
+                "uid=%s spool=%s current_tag=%s spool_identity=None",
+                gate._name.capitalize(), target_gate, left_uid, left_spool,
+                "yes" if left_tag is not None else "no")
         return None
 
     left_hh = hh_status.read(gate.printer, target_gate)
@@ -1534,11 +1554,12 @@ def spool_identity_for_gate(gate, target_gate):
                 gate._name, gate._gate, target_gate, left_identity,
                 left_hh.status)
         return None
-    if gate._debug >= 4:
-        logger.debug(
-            "[%s]: left gate %d spool_identity=%s hh_available=%s",
-            gate._name.capitalize(), target_gate, left_identity,
-            left_hh.available if left_hh.present else "hh-absent")
+    if gate._debug >= 3:
+        logger.info(
+            "[%s]: left gate %d spool_identity lookup — "
+            "uid=%s spool=%s spool_identity=%s hh_available=%s",
+            gate._name.capitalize(), target_gate, left_uid, left_spool,
+            left_identity, left_hh.available if left_hh.present else "hh-absent")
     return left_identity
 
 
@@ -1547,17 +1568,22 @@ def is_left_neighbor_spool_identity_match(gate):
         return False
     identity = current_spool_identity(gate)
     if not identity:
-        if gate._debug >= 4:
-            logger.debug(
-                "[%s]: interference check skipped; current spool_identity unavailable",
-                gate._name.capitalize())
+        if gate._debug >= 3:
+            logger.info(
+                "[%s]: interference check skipped — gate %d uid=%s "
+                "spool=%s current spool_identity=None",
+                gate._name.capitalize(), gate._gate,
+                read_uid_from_scan_event(gate), read_spool_from_scan_event(gate))
         return False
     left_identity = spool_identity_for_gate(gate, gate._gate - 1)
     result = left_identity is not None and left_identity == identity
-    if gate._debug >= 4:
-        logger.debug(
-            "[%s]: interference check spool_identity=%s left_spool_identity=%s -> %s",
-            gate._name.capitalize(), identity, left_identity,
+    if gate._debug >= 3:
+        logger.info(
+            "[%s]: interference check — gate %d uid=%s spool=%s "
+            "spool_identity=%s left_gate=%d left_spool_identity=%s -> %s",
+            gate._name.capitalize(), gate._gate, read_uid_from_scan_event(gate),
+            read_spool_from_scan_event(gate), identity, gate._gate - 1,
+            left_identity,
             "match" if result else "no match")
     return result
 
@@ -2164,6 +2190,7 @@ def finish(gate):
             gate._console(msg)
     gate._scan_previous_uid = None
     gate._scan_previous_spool = None
+    gate._scan_previous_spool_identity = None
     gate._scan_decode_retry_attempts = 0
     gate._scan_decode_retry_uid = None
     gate._scan_decode_retry_offset = 0.0
@@ -2209,6 +2236,7 @@ def rewind_and_exit(gate):
         gate._hh_load_paused = False
     gate._scan_previous_uid = None
     gate._scan_previous_spool = None
+    gate._scan_previous_spool_identity = None
     if gate._debug >= 3:
         logger.info(
             "[%s]: gate %d scan mode — no tag found, "

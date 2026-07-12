@@ -381,6 +381,11 @@ def parse_current_tag(gate, tag):
             tag.spool_identity = _spool_identity_from_meta(info)
             tag.parse_error = info.get('parse_error') or info.get('error')
         if gate._debug >= 3:
+            logger.info(
+                "[%s]: gate %d — uid=%s  spool_identity resolved from "
+                "parsed meta: %s",
+                gate._name, gate._gate, uid_hex,
+                tag.spool_identity if tag.spool_identity else "None")
             logger.info("[%s]: gate %d — uid=%s  parsed tag meta: %s",
                         gate._name, gate._gate, uid_hex, _summarize_meta(tag.meta))
         if gate._debug >= 4:
