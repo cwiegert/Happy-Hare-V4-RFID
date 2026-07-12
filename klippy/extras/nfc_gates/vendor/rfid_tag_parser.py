@@ -1229,7 +1229,17 @@ _CREALITY_VENDOR_MAP: dict[str, str] = {
 }
 
 
-def _try_creality_tag(blocks: dict) -> Optional[dict]:
+def _creality_ascii_preview(data: bytes, limit: int = 64) -> str:
+    """Return a single-line printable preview for Creality debug traces."""
+    preview = ''.join(
+        chr(b) if 32 <= b <= 126 else '.'
+        for b in bytes(data)[:limit])
+    if len(data) > limit:
+        preview += "..."
+    return preview
+
+
+def _try_creality_tag(blocks: dict, trace=None) -> Optional[dict]:
     """Parse a Creality CFS/K1/K2 tag from authenticated sector-1 blocks.
 
     ``blocks`` must contain absolute blocks 4, 5 and 6 (sector 1), read after
@@ -1245,16 +1255,38 @@ def _try_creality_tag(blocks: dict) -> Optional[dict]:
     DnG's writers build filament_id as a 1-character printer/type prefix plus
     the 5-character material code used by Creality's material database.
     """
+    trace = _make_trace(trace)
     if not _PYCRYPTODOME_OK:
+        trace("debug", "Creality AES: pycryptodome unavailable")
         return None
     b4, b5, b6 = blocks.get(4), blocks.get(5), blocks.get(6)
     if not b4 or not b5 or not b6:
+        trace("debug",
+              "Creality AES: missing sector-1 blocks have4=%s have5=%s have6=%s",
+              bool(b4), bool(b5), bool(b6))
         return None
+    raw_payload = bytes(b4)[:16] + bytes(b5)[:16] + bytes(b6)[:16]
+    trace("debug", "Creality AES: encrypted blocks 4-6 hex=%s",
+          raw_payload.hex().upper())
     try:
-        ascii_data = _creality_decrypt_tag_data(b4, b5, b6).decode("ascii")
-    except Exception:
+        decrypted = _creality_decrypt_tag_data(b4, b5, b6)
+    except Exception as exc:
+        trace("debug", "Creality AES: decrypt failed: %s", exc)
         return None
-    if len(ascii_data) < 40 or not ascii_data.isprintable():
+    trace("debug", "Creality AES: decrypted payload hex=%s",
+          decrypted.hex().upper())
+    trace("debug", "Creality AES: decrypted payload ascii=%r",
+          _creality_ascii_preview(decrypted))
+    try:
+        ascii_data = decrypted.decode("ascii")
+    except Exception as exc:
+        trace("debug", "Creality AES: decrypted payload is not ASCII: %s", exc)
+        return None
+    if len(ascii_data) < 40:
+        trace("debug", "Creality AES: payload too short len=%d", len(ascii_data))
+        return None
+    if not ascii_data.isprintable():
+        trace("debug", "Creality AES: payload contains non-printable chars")
         return None
 
     date_code     = ascii_data[0:5]
@@ -1265,15 +1297,37 @@ def _try_creality_tag(blocks: dict) -> Optional[dict]:
     color         = ascii_data[17:24]
     length        = ascii_data[24:28]
     serial        = ascii_data[28:34]
+    reserve       = ascii_data[34:40]
+    trace(
+        "debug",
+        "Creality AES: parsed fields date_code=%r vendor_id=%r batch=%r "
+        "filament_id=%r material_code=%r color=%r length=%r serial=%r "
+        "reserve=%r",
+        date_code, vendor_id, batch, filament_id, material_code, color,
+        length, serial, reserve)
 
     # Sanity check: material/color fields must look like the encoder's own
     # format, otherwise this is the wrong key/tag rather than valid data.
-    if (not filament_id.isdigit()
-            or not material_code.isdigit()
-            or not re.fullmatch(r"[0-9A-Fa-f]{7}", color)):
+    if not filament_id.isdigit():
+        trace("debug", "Creality AES: reject filament_id not numeric: %r",
+              filament_id)
+        return None
+    if not material_code.isdigit():
+        trace("debug", "Creality AES: reject material_code not numeric: %r",
+              material_code)
+        return None
+    if not re.fullmatch(r"[0-9A-Fa-f]{7}", color):
+        trace("debug", "Creality AES: reject color not 7 hex chars: %r",
+              color)
         return None
 
     vendor_name = _CREALITY_VENDOR_MAP.get(vendor_id)
+    if vendor_name:
+        trace("debug", "Creality AES: vendor_id=%s resolved to %s",
+              vendor_id, vendor_name)
+    else:
+        trace("debug", "Creality AES: vendor_id=%s unknown; using Creality brand fallback",
+              vendor_id)
     info: dict = {
         "brand": vendor_name or "Creality",
         "tag_format": "creality",
@@ -1287,16 +1341,29 @@ def _try_creality_tag(blocks: dict) -> Optional[dict]:
     }
     if vendor_name:
         info["creality_vendor"] = vendor_name
-    info["material"] = _CREALITY_MATERIAL_MAP.get(
+    material = _CREALITY_MATERIAL_MAP.get(
         material_code, "Unknown (%s)" % material_code)
+    info["material"] = material
+    trace("debug", "Creality AES: material_code=%s resolved to %s",
+          material_code, material)
 
     color_hex = color[1:]  # leading nibble unused; remaining 6 = RRGGBB
     if re.fullmatch(r"[0-9A-Fa-f]{6}", color_hex):
         info["color_hex"] = color_hex.upper()
+        trace("debug", "Creality AES: color=%r resolved to #%s",
+              color, info["color_hex"])
+    else:
+        trace("debug", "Creality AES: color suffix not valid RGB: %r",
+              color_hex)
 
     weight_g = _CREALITY_LENGTH_TO_WEIGHT_G.get(length)
     if weight_g:
         info["weight_g"] = weight_g
+        trace("debug", "Creality AES: length=%s resolved to weight_g=%d",
+              length, weight_g)
+    else:
+        trace("debug", "Creality AES: length=%s has no known weight mapping",
+              length)
 
     if len(date_code) == 5 and date_code.isdigit():
         month = int(date_code[0])
@@ -1305,7 +1372,16 @@ def _try_creality_tag(blocks: dict) -> Optional[dict]:
         if 1 <= month <= 9 and 1 <= day <= 31:
             info["creality_production_date"] = "20%02d-%02d-%02d" % (
                 year, month, day)
+            trace("debug", "Creality AES: date_code=%s resolved to %s",
+                  date_code, info["creality_production_date"])
+        else:
+            trace("debug", "Creality AES: date_code=%s outside expected MDDYY range",
+                  date_code)
+    else:
+        trace("debug", "Creality AES: date_code=%r not numeric MDDYY",
+              date_code)
 
+    trace("debug", "Creality AES: parse success")
     return info
 
 
@@ -2172,7 +2248,7 @@ def parse_tag(raw, uid_hex: Optional[str] = None, trace=None) -> Optional[dict]:
             # blocks produced by tag_handler's Creality Key B fallback.
             try:
                 trace("debug", "parse_tag: trying Creality AES block layout")
-                result = _try_creality_tag(blocks)
+                result = _try_creality_tag(blocks, trace=trace)
                 if result is not None:
                     _log.debug(
                         "rfid: parsed Creality AES tag blocks uid=%s",

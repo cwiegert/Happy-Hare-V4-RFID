@@ -150,7 +150,10 @@ _META_SUMMARY_KEYS = (
     'material_id', 'material_variant_id', 'sku', 'color_hex',
     'diameter_mm', 'weight_g', 'spool_weight_g', 'min_temp', 'max_temp',
     'bed_temp', 'drying_temp', 'drying_time_h', 'tray_uid', 'spool_identity',
-    'spoolman_id', 'parse_warning', 'parse_error', 'error',
+    'spoolman_id', 'material_code', 'color_code', 'manufacturer_code',
+    'creality_vendor_id', 'creality_filament_id', 'creality_batch',
+    'creality_date_code', 'creality_production_date', 'creality_serial',
+    'parse_warning', 'parse_error', 'error',
 )
 
 

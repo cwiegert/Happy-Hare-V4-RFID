@@ -132,6 +132,10 @@ call always releases the target.
   material code is still used for `_CREALITY_MATERIAL_MAP` lookup. The common
   vendor ID `0276` resolves to `Creality`; the raw ID is also stored as
   `creality_vendor_id` and the legacy `creality_supplier` alias.
+- 📝 **Creality level-4 decode instrumentation** — when `debug: 4` is enabled,
+  `_try_creality_tag()` now traces encrypted blocks 4-6, the decrypted payload
+  as hex and printable ASCII, each parsed field, lookup results, and the exact
+  reject reason when a real tag does not match the expected layout.
 - ✨ **Key B support added to all three reader drivers** —
   `mifare_read_authenticated_blocks()` gained a `use_key_b` parameter in
   `pn532_driver.py`, `pn7160_driver.py`, and `rc522_driver.py`, threaded down
