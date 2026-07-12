@@ -1,6 +1,12 @@
-# Happy Hare RFID/NFC Reader
+# Happy Hare V4 RFID/NFC Reader
 
-NFC spool identification for Happy Hare. Use one NFC reader on each EMU lane, one shared reader inside the MMU body, or both. PN532 remains the default reader; PN7160 is also supported with `reader_type: pn7160`; RC522 is supported as an SPI reader with `reader_type: rc522`.
+NFC spool identification for Happy Hare V4 and later. Use one NFC reader on each EMU lane, one shared reader inside the MMU body, or both. PN532 remains the default reader; PN7160 is also supported with `reader_type: pn7160`; RC522 is supported as an SPI reader with `reader_type: rc522`.
+
+> [!CAUTION]
+> The V4 port is source-verified but not yet validated on a live V4 printer. The
+> shared-reader path is source-complete; per-lane scan-jog still has open V4
+> motion work. See the [V4 implementation log](docs/shared/v4-implementation-log.md)
+> and [porting plan](docs/shared/v4-porting-plan.md) before deploying this branch.
 
 This is a system-level Klipper integration, not a plug-and-play appliance. It touches Klipper extras, Happy Hare macros, lane MCU firmware, I2C wiring, Spoolman, and optional LED effects. If you are not comfortable recovering from a Klipper config error, reflashing lane MCUs, and reading logs, expect a learning curve.
 
@@ -53,7 +59,7 @@ The shared reader can stage only a real Spoolman spool ID. UID lookup, embedded 
 
 ## Requirements
 
-- Voron/EMU setup running the [igiannakas IG-dev branch of Happy Hare](https://github.com/igiannakas/Happy-Hare/tree/IG-dev), which provides `variable_user_post_preload_extension`
+- Happy Hare V4 or later with the `variable_user_post_preload_extension` post-preload hook
 - One Klipper MCU per filament lane for per-lane reader installs, or one MCU hosting the shared NFC reader
 - Supported NFC reader hardware configured for its bus
 - Hardware I2C or SPI bus on the MCU hosting the NFC reader
@@ -71,17 +77,19 @@ The shared reader can stage only a real Spoolman spool ID. UID lookup, embedded 
 - NFC tags on spools: NTAG213/215/216, MIFARE Classic, or supported rich-tag formats
 - Lane MCU firmware rebuilt from the same Klipper checkout as the host
 
-## Happy Hare V4 Compatibility
+## Happy Hare V4 Integration
 
-Happy Hare v4 can run the post-preload hook while the MMU reports
-`action=checking`. For automatic gate-status polling, NFC treats `checking` as
-scan-safe only when the detected Happy Hare major version is 4 or newer. For
-the post-preload hook, `_NFC_SCAN_JOG_PRELOAD` sends
-`NFC GATE=<n> JOG_SCAN=1 SOURCE=AUTO`; that trusted hook path uses the same
-version-aware scan-safe check: Happy Hare v4 accepts `action=idle` or
-`action=checking`; Happy Hare v3/pre-v4 and unknown versions accept only
-`action=idle`. Manual or console `JOG_SCAN=1` commands without `SOURCE=AUTO`
-stay conservative and always require `action=idle`.
+This branch targets V4 directly; it has no Happy Hare V3 compatibility or
+version-detection path. NFC reads live V4 controller state rather than parsing
+`mmu.get_status()` output. `_NFC_SCAN_JOG_PRELOAD` sends
+`NFC GATE=<n> JOG_SCAN=1 SOURCE=AUTO`; this trusted hook call may begin while
+the MMU action is `idle` or `checking`. Manual or console `JOG_SCAN=1` commands
+without `SOURCE=AUTO` remain conservative and require `idle`.
+
+The post-preload hook is the only automatic per-lane scan-jog trigger. Normal
+lane polling still detects tags and ejection, but it no longer watches for a
+gate-status transition to launch scan-jog. If another automatic scan is active,
+the new gate is queued and starts after the active scan releases the MMU.
 
 Supported readers:
 
@@ -122,6 +130,8 @@ values for scan-jog left-neighbor interference handling.
 | [Spoolman Integration](docs/shared/spoolman-integration.md) | Extra field setup, UID registration, lookup behavior |
 | [Troubleshooting](docs/i2c-nfc/troubleshooting.md) | Startup errors, reader failures, tag lookup issues |
 | [How It Works](docs/shared/how-it-works.md) | Boot sequence, poll flow, scan-jog, dispatch layers |
+| [V4 Implementation Log](docs/shared/v4-implementation-log.md) | Implemented V4 changes, verification, and open runtime work |
+| [V4 Porting Plan](docs/shared/v4-porting-plan.md) | Component ownership, remaining port work, and cutover checklist |
 | [Expert I2C Debugging](docs/shared/expert-low-level-i2c-debugging.md) | Low-level PN532 probe commands |
 
 ## Quick Install
@@ -221,7 +231,7 @@ These are the defaults shipped in `config/nfc_reader.cfg`:
 | `startup_polling` | `1` | Start polling after reader init succeeds |
 | `poll_interval` | `10` | Per-lane background poll interval in seconds |
 | `absent_threshold` | `3` | Missed polls before a removal event |
-| `scan_enabled` | `False` | Disables automatic gate-status scan-jog trigger; manual/hook `JOG_SCAN` still works |
+| `scan_enabled` | `False` | Legacy setting retained for config compatibility; V4 automatic scan-jog is hook-driven |
 | `scan_jog_mm` | `150.0` | Logical scan chunk divided into three stopped-position substeps |
 | `scan_jog_max` | unset | Optional fixed scan-jog travel limit; leave unset to use the lane Bowden length |
 | `scan_reads_per_position` | `1` | Reads per stopped scan position |

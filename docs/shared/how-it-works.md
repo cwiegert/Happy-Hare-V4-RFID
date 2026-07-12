@@ -95,20 +95,22 @@ proof of same-vs-different spool on its own.
 
 ### Trigger
 
-The poll tick runs the gate-status edge check on every cycle. When all conditions are met, scan mode starts and the poll timer parks itself at `NEVER` for the duration.
+Happy Hare V4's post-preload hook is the automatic scan-jog trigger. The hook
+calls `_NFC_SCAN_JOG_PRELOAD`, which submits a trusted AUTO request:
 
 ```
-_poll_timer_event  (every poll_interval seconds)
-  └─ reads HH gate_status[N]  (Python dict — no I2C)
-  └─ gate_status was 0, is now 1?
-       AND  HH action == idle?
-       AND  not printing?
-       AND  no other gate currently scanning?
-         └─ YES → _start_scan_mode()  →  poll timer parks at NEVER
-         └─ NO  → continue normal polling
+Happy Hare V4 completes preload
+  └─ variable_user_post_preload_extension: '_NFC_SCAN_JOG_PRELOAD'
+       └─ NFC GATE=<n> JOG_SCAN=1 SOURCE=AUTO
+            └─ validate reader, print state, gate state, and MMU action
+            └─ action is idle/checking and MMU free? → start scan-jog
+            └─ another gate scanning? → enqueue gate and run it later
 ```
 
-Initialization sets `_prev_gate_status = -1` so a cold-start with status already at 1 (from a previous session) does not trigger scan mode — only a fresh 0→1 transition fires it.
+`_poll_timer_event()` still reads V4's live `mmu.gate_maps.gate_status` values,
+but only to suppress redundant reader I/O while Happy Hare already owns a gate
+and to detect ejection so NFC can clear its cache and resume reads. Polling does
+not decide when to launch scan-jog.
 
 ### Virtual endstop
 
@@ -182,9 +184,22 @@ still uses a queued Happy Hare MMU-toolhead move (bypassing the public
 `MMU_TEST_MOVE` G-code wrapper) rather than a homing move, since there is no
 tag to home against on the way back.
 
+> [!WARNING]
+> This continuous-motion implementation still references the V3
+> `mmu_toolhead` abstraction, which does not exist in V4. The homing/virtual
+> endstop path is source-verified, but the remaining motion port and live
+> printer test are open in [V4 Porting Plan §2.7](v4-porting-plan.md#27-scan_jogpy--deep-dive-the-motion-rail-question).
+
 ### Class-level scan lock
 
-All lane instances share one class variable, `NFCGate._active_scan_gate`. Because Klipper's reactor is single-threaded, reads and writes are atomic with respect to timer callbacks — no mutex needed. Only one gate may scan at a time; a second gate that detects a 0→1 edge while the lock is held re-arms its pending flag and retries on the next poll tick. The lock is held until a scan's rewind, Happy Hare dispatch, poll resume, and LED release have all completed — releasing it any earlier let a second `JOG_SCAN=1` start while the previous session's own Happy Hare interaction was still in flight.   If you try to start a jog_scan while another is in flight, and that attempt is blocked/queued for next tick, you may see a spool start jogging wihtout an interactive initiation.   This behavior is expected, as it's the queued scan executing once the block is lifted.   The behavinor allows the user to add spools to the mmu without having to wait for a previous jog_scan to complete.  as each laned completes, the next lane will initiate the jog_scan.
+All lane instances share `NFCGate._active_scan_gate` and `NFCGate._scan_queue`.
+Only one gate may scan at a time. If a trusted `SOURCE=AUTO` request arrives
+while another scan owns the lock, its gate number is added once to the queue.
+When the active scan finishes or rewinds and exits, it releases the lock and
+asynchronously reissues the next queued AUTO command so all normal validation
+runs again. A gate that was ejected while waiting therefore does not move.
+Manual requests are not queued; they report that another scan is active and
+must be retried by the operator.
 
 ---
 
@@ -194,10 +209,7 @@ Each layer owns one responsibility and must not reach across the boundary.
 
 | Layer | File | Owns | Does not own |
 |---|---|---|---|
-| **ReaderFactory** | `reader_factory.py` | Selects `PN532Driver`, `PN7160Driver`, or `RC522Driver` from `reader_type`, validates reader-specific bus defaults | Tag parsing, gate policy, Happy Hare |
-| **PN532Driver** | `pn532_driver.py` | PN532 wire protocol, I2C frames, UID/page/block reads | Spoolman, gate policy, Happy Hare |
-| **PN7160Driver** | `pn7160_driver.py` | PN7160/NCI protocol, Type2/Type5/MIFARE reads, RF discovery lifecycle | Spoolman, gate policy, Happy Hare |
-| **RC522Driver** | `rc522_driver.py` | RC522 SPI register protocol, ISO14443A select/cascade, UID reads, NTAG/Type-2 page reads, and MIFARE Classic auth/block reads | Rich tag parsing, Spoolman, gate policy, Happy Hare |
+| **Reader factory and drivers** | currently `reader_factory.py`, `pn532_driver.py`, `pn7160_driver.py`, `rc522_driver.py` | Transitional reader selection and hardware protocol implementation; planned to move to Happy Hare | NFC gate policy, Spoolman workflow |
 | **SpoolmanClient** | `spoolman_client.py` | UID → spool record lookup, TTL cache, URL discovery | Gate state, lane assignment, MMU commands |
 | **TagHandler** | `tag_handler.py` | Tag classification, NTAG/MIFARE capture, metadata parsing, spool resolution ladder | Gate lifecycle, polling timers, GCode dispatch |
 | **GateState** | `gate_state.py` | Per-gate debounce state machine, event generation, `CurrentTag` observation | Hardware reads, Spoolman, GCode |

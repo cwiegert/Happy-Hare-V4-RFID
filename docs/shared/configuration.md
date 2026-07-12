@@ -230,6 +230,11 @@ poll_interval × absent_threshold = seconds before removal fires
 
 ### Scan-and-Jog
 
+> [!WARNING]
+> Per-lane scan-jog is not yet runtime-ready on this V4 branch. The virtual
+> endstop path is source-verified, but `scan_jog.py` still has open V4 motion
+> work tracked in [V4 Porting Plan §2.7](v4-porting-plan.md#27-scan_jogpy--deep-dive-the-motion-rail-question).
+
 ```ini
 [nfc_gate]
 scan_enabled:          False
@@ -249,7 +254,7 @@ scan_continuous_poll_interval: 0.05
 
 | Setting | Default | Description |
 |---|---|---|
-| `scan_enabled` | `False` | Controls the automatic Happy Hare gate-status edge trigger. `False` disables automatic 0→1 scan-jog, but manual `NFC JOG_SCAN=1` or Happy Hare hook-triggered `_NFC_SCAN_JOG_PRELOAD` still works. |
+| `scan_enabled` | `False` | Legacy config key retained during the V4 port. Automatic scan-jog is driven only by `_NFC_SCAN_JOG_PRELOAD`; normal polling never launches it. |
 | `scan_jog_mm` | `150.0` | Logical filament advance per scan chunk (mm). NFC divides this into three blocking MMU_TEST_MOVE substeps so it can read at stopped spool positions. For rich tags such as Bambu/MIFARE, a smaller value like `75.0` can improve payload-read reliability. |
 | `scan_jog_max` | unset | Optional maximum scan-jog travel distance. When set, NFC uses this value and does not read Happy Hare Bowden calibration. `480.0` is roughly one full spool rotation. Leave unset/commented to keep scanning until the active lane's Bowden calibration length is reached. |
 | `scan_reads_per_position` | `1` | Number of NFC read attempts at each stopped spool position before moving the next substep. Reads are spaced by `scan_poll_interval`. Increase for marginal tag alignment at the cost of scan time. |
@@ -283,9 +288,9 @@ parsing is needed to confirm interference, NFC backs up to the observed UID
 hit-window center before rich parsing and the normal `scan_decode_retry_mm`
 retry sweep.
 
-**Happy Hare post-preload hook (alternative to automatic polling):**
+**Happy Hare post-preload hook (required for automatic scan-jog):**
 
-The [igiannakas IG-dev branch](https://github.com/igiannakas/Happy-Hare/tree/IG-dev) of Happy Hare adds `variable_user_post_preload_extension` in `config/base/mmu_macro_vars.cfg`. Set it to trigger NFC scan-jog after each successful `MMU_PRELOAD`:
+Set Happy Hare V4's `variable_user_post_preload_extension` in `config/base/mmu_macro_vars.cfg` to trigger NFC scan-jog after each successful `MMU_PRELOAD`:
 
 ```ini
 [gcode_macro _MMU_SEQUENCE_VARS]
@@ -294,7 +299,7 @@ gcode: # Leave empty
 variable_user_post_preload_extension: '_NFC_SCAN_JOG_PRELOAD'
 ```
 
-Happy Hare appends `GATE=<n>` automatically. `_NFC_SCAN_JOG_PRELOAD` calls `NFC GATE=<n> JOG_SCAN=1`; NFC starts the configured scan-jog LED effect from the Python scan timer before motion begins. NFC always clears the Happy Hare gate cache, explicitly unsets the old Spoolman gate assignment with `MMU_SPOOLMAN GATE=<n>`, and runs the pre-scan `MMU_SPOOLMAN SYNC=1`; when launched from this hook, those calls are deferred to the scan timer so the hook can return first.
+Happy Hare appends `GATE=<n>` automatically. `_NFC_SCAN_JOG_PRELOAD` calls `NFC GATE=<n> JOG_SCAN=1 SOURCE=AUTO`; NFC starts the configured scan-jog LED effect from the Python scan timer before motion begins. NFC always clears the Happy Hare gate cache, explicitly unsets the old Spoolman gate assignment with `MMU_SPOOLMAN GATE=<n>`, and runs the pre-scan `MMU_SPOOLMAN SYNC=1`; when launched from this hook, those calls are deferred to the scan timer so the hook can return first.
 
 Recommended NFC config when using the hook:
 
@@ -304,7 +309,14 @@ startup_polling: 0
 scan_enabled:    False
 ```
 
-With this setup NFC does not poll gate-status at all — Happy Hare calls NFC only after the relevant gate completes preload. The gate-status 0→1 edge trigger is disabled.
+With this setup Happy Hare calls NFC after the relevant gate completes preload.
+Lane background polling may still read gate status to suppress redundant I2C
+work and detect ejection, but it never uses a 0→1 edge to start scan-jog.
+
+> [!NOTE]
+> Happy Hare's crossload path calls `MmuUnit.preload()` without running the
+> post-preload extension. For that path, start the scan manually with
+> `NFC GATE=<n> JOG_SCAN=1`; neither the hook nor polling triggers it today.
 
 ---
 

@@ -2,9 +2,8 @@
 #
 # Scan-and-jog mode helpers for NFCGate.
 
-from . import hh_status
-from .LED_effect_mgr import (
-    EVENT_REWIND, EVENT_SCAN_START, EVENT_TAG_READ, LEDEffectManager)
+from .NFC_LEDManager import (
+    EVENT_REWIND, EVENT_SCAN_START, EVENT_TAG_READ, NFCLEDManager)
 from .gate_state import (
     DIRECT_METADATA_SPOOL, EVENT_CHANGED, EVENT_UID_ONLY, CurrentTag)
 from .log import info_both, logger
@@ -53,7 +52,7 @@ def _led_effect(gate, effect_name):
     """
     if not effect_name:
         return
-    led = LEDEffectManager(
+    led = NFCLEDManager(
         gate.printer, reactor=gate.reactor, name=gate._name,
         console=getattr(gate, '_console', None))
     result = led.play_lane_event(
@@ -105,9 +104,30 @@ def _cancel_led_reassert(gate):
 def _led_release(gate):
     """Return LED control to Happy Hare."""
     _cancel_led_reassert(gate)
-    led = LEDEffectManager(gate.printer, reactor=gate.reactor, name=gate._name)
+    led = NFCLEDManager(gate.printer, reactor=gate.reactor, name=gate._name)
     led.release()
 
+
+def _drain_scan_queue(gate):
+    """Start the next queued AUTO scan-jog request, if any.
+
+    Called right after _active_scan_gate is released, once this gate's own
+    scan-jog session has fully finished. Re-issues the same
+    "NFC GATE=<n> JOG_SCAN=1 SOURCE=AUTO" gcode Happy Hare's own hook would
+    have sent, deferred via a fresh reactor callback rather than called
+    inline (matches the async-dispatch pattern already used elsewhere for
+    post-scan Happy Hare interactions) -- this re-runs the full
+    manual_jog_scan() validation from scratch, so a gate that changed state
+    while queued (e.g. ejected) is handled correctly rather than assumed
+    still valid.
+    """
+    queue = gate.__class__._scan_queue
+    if not queue:
+        return
+    next_gate = queue.pop(0)
+    script = "NFC GATE=%d JOG_SCAN=1 SOURCE=AUTO" % next_gate
+    gate.reactor.register_async_callback(
+        lambda et, _s=script: gate._safe_run_script(_s))
 
 
 def manual_jog_scan(gate, gcmd):
@@ -141,17 +161,27 @@ def manual_jog_scan(gate, gcmd):
         if busy:
             msg = ("[WARN] NFC[%s]: Happy Hare is busy (action=%s) — "
                    "wait for idle before starting scan-jog"
-                   % (gate._name, hh.action))
+                   % (gate._name, hh.action_label()))
             logger.warning(msg)
             gcmd.respond_info(_color_tags(msg))
             return
-    if hh.present and hh.status == hh_status.GATE_EMPTY:
+    if hh.present and hh.empty:
         msg = ("[ERROR] NFC[%s]: jog_scan is not enabled for an empty gate"
                % gate._name)
         logger.error(msg, extra={'nfc_no_console': True})
         gcmd.respond_info(_color_tags(msg))
         return
     if gate.__class__._active_scan_gate is not None:
+        if trusted_auto:
+            queue = gate.__class__._scan_queue
+            if gate._gate not in queue:
+                queue.append(gate._gate)
+            msg = ("[SCAN] NFC[%s]: gate %d is already scanning — "
+                   "queued gate %d to start automatically once it finishes"
+                   % (gate._name, gate.__class__._active_scan_gate, gate._gate))
+            logger.info(msg)
+            gcmd.respond_info(_color_tags(msg))
+            return
         msg = ("[WARN] NFC[%s]: gate %d is already scanning — "
                "only one gate may scan at a time"
                % (gate._name, gate.__class__._active_scan_gate))
@@ -1630,7 +1660,7 @@ def spool_identity_for_gate(gate, target_gate):
                 "yes" if left_tag is not None else "no")
         return None
 
-    left_hh = hh_status.read(gate.printer, target_gate)
+    left_hh = gate._read_hh_status_for_gate(target_gate)
     if left_hh.present and not left_hh.available:
         if gate._debug >= 3:
             logger.info(
@@ -2345,6 +2375,7 @@ def finish(gate):
     # this session's own tail was still running, racing both sessions'
     # Happy Hare interactions against each other.
     gate.__class__._active_scan_gate = None
+    _drain_scan_queue(gate)
 
 
 def rewind_and_exit(gate):
@@ -2392,6 +2423,7 @@ def rewind_and_exit(gate):
     _led_release(gate)
     # See finish(): release the scan guard only after all cleanup is done.
     gate.__class__._active_scan_gate = None
+    _drain_scan_queue(gate)
 
 
 def console(gate, msg):

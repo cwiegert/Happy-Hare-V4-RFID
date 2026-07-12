@@ -14,9 +14,8 @@
 
 import inspect
 
-from . import hh_status
-from .LED_effect_mgr import (
-    EVENT_AUTO_CREATE, EVENT_UNRESOLVED, LEDEffectManager)
+from .NFC_LEDManager import (
+    EVENT_AUTO_CREATE, EVENT_UNRESOLVED, NFCLEDManager)
 from .gate_state import CurrentTag, DIRECT_METADATA_SPOOL
 from .log import logger
 
@@ -29,7 +28,7 @@ def _lane_led_effect(gate, effect_name):
     printer = getattr(gate, 'printer', None)
     if printer is None:
         return
-    result = LEDEffectManager(
+    result = NFCLEDManager(
         printer, reactor=getattr(gate, 'reactor', None),
         name=getattr(gate, '_name', 'nfc')).play_lane_event(
             _lane_led_event(effect_name), effect_name, gate._gate,
@@ -265,7 +264,7 @@ def _left_neighbor_identity_match(gate, identity):
                 "pre-create check: gate %d has no spool_identity",
                 gate._name, gate._gate, identity, left_gate)
         return False
-    left_hh = hh_status.read(gate.printer, left_gate)
+    left_hh = gate._read_hh_status_for_gate(left_gate)
     if left_hh.present and not left_hh.available:
         if gate._debug >= 3:
             logger.info(

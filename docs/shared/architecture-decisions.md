@@ -208,6 +208,26 @@ laneN]` to be enabled with a working reader at Klipper connect time — it
 raises a config error rather than silently no-op'ing if the lane is disabled,
 so both sections must be enabled or disabled together.
 
+The V4 binding is direct: the endstop is attached to
+`mmu.drive(gate).mmu_gear_stepper.rail`. There is no V3 rail fallback or
+compatibility adapter.
+
+---
+
+## Decision: Happy Hare Owns Automatic Scan-Jog Timing
+
+**What we decided:** `_NFC_SCAN_JOG_PRELOAD` is the sole automatic per-lane
+scan-jog trigger. Background NFC polling may suppress reads based on the live
+V4 gate map and detect ejection, but it does not infer a preload from a gate
+status edge.
+
+**Why:** Happy Hare owns preload sequencing and knows exactly when its parking
+work has completed. Keeping a second edge-driven trigger in NFC duplicated
+that decision and created races. Trusted AUTO requests that arrive while the
+MMU is scanning another gate are queued and validated again when dequeued.
+
+Manual `JOG_SCAN=1` remains available but is deliberately not queued.
+
 ---
 
 ## Boundary Summary

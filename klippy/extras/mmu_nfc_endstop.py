@@ -5,13 +5,14 @@
 # This module intentionally does not create any NFC/I2C hardware.  It borrows
 # the reader owned by [nfc_gate <name>] and polls it only while Happy Hare is
 # performing a homing move against the configured virtual endstop.
+#
+# Targets Happy Hare V4 directly — no V3 compatibility layer. Registers on
+# mmu.drive(gate).mmu_gear_stepper.rail via add_extra_endstop(pin=None, ...),
+# the same idiom V4's own core code uses for its own virtual sensors.
 
 import logging
 
-from .nfc_gates.happy_hare_compat import (
-    create_mmu_runout_helper,
-    register_nfc_endstop,
-)
+from .mmu.mmu_sensor_utils import MmuRunoutHelper
 
 
 class MmuNfcEndstop:
@@ -31,8 +32,14 @@ class MmuNfcEndstop:
         self._filament_present = False
         self.runout_helper = None
         if self._register_sensor:
-            self.runout_helper = create_mmu_runout_helper(
-                self.printer, self.endstop_name)
+            self.runout_helper = MmuRunoutHelper(
+                self.printer,
+                self.endstop_name,
+                event_delay=0,
+                gcodes={},
+                insert_remove_in_print=False,
+                button_handler=None,
+            )
             self.get_status = self.runout_helper.get_status
             sensor_obj_name = "filament_switch_sensor %s" % self.endstop_name
             if self.printer.lookup_object(sensor_obj_name, None) is None:
@@ -66,15 +73,51 @@ class MmuNfcEndstop:
                 % (self.name, self._nfc_gate_name))
 
         mmu = self.printer.lookup_object('mmu')
-        try:
-            rail_description = register_nfc_endstop(mmu, nfc_gate, self)
-        except RuntimeError as e:
+        gate_number = getattr(nfc_gate, '_gate', None)
+        if gate_number is None:
             raise self.config.error(
-                "mmu_nfc_endstop %s could not register with Happy Hare: %s"
-                % (self.name, str(e)))
+                "mmu_nfc_endstop %s: [nfc_gate %s] does not expose a "
+                "logical Happy Hare gate number"
+                % (self.name, self._nfc_gate_name))
+
+        endstops_by_gate = getattr(mmu, '_nfc_endstops_by_gate', None)
+        if endstops_by_gate is None:
+            endstops_by_gate = {}
+            setattr(mmu, '_nfc_endstops_by_gate', endstops_by_gate)
+
+        existing_for_gate = endstops_by_gate.get(gate_number)
+        if existing_for_gate is not None and existing_for_gate is not self:
+            raise self.config.error(
+                "mmu_nfc_endstop %s could not register with Happy Hare: "
+                "gate %d is already bound to NFC endstop '%s'"
+                % (self.name, gate_number, existing_for_gate.endstop_name))
+
+        existing_for_reader = getattr(nfc_gate, '_mmu_nfc_endstop', None)
+        if existing_for_reader is not None and existing_for_reader is not self:
+            raise self.config.error(
+                "mmu_nfc_endstop %s could not register with Happy Hare: "
+                "reader for gate %d is already bound to endstop '%s'"
+                % (self.name, gate_number, existing_for_reader.endstop_name))
+
+        drive = mmu.drive(gate_number)
+        gear_stepper = getattr(drive, 'mmu_gear_stepper', None)
+        rail = getattr(gear_stepper, 'rail', None)
+        if rail is None or not hasattr(rail, 'add_extra_endstop'):
+            raise self.config.error(
+                "mmu_nfc_endstop %s could not register with Happy Hare: "
+                "drive %d does not expose a gear rail"
+                % (self.name, gate_number))
+
+        # V4 explicitly supports pin=None for software implemented endstops.
+        rail.add_extra_endstop(None, self.endstop_name, mcu_endstop=self)
+
+        endstops_by_gate[gate_number] = self
+        nfc_gate._mmu_nfc_endstop = self
+        nfc_gate._mmu_nfc_endstop_name = self.endstop_name
+
         logging.info(
-            "MMU: Registered NFC virtual endstop '%s' from [nfc_gate %s] on %s",
-            self.endstop_name, self._nfc_gate_name, rail_description)
+            "MMU: Registered NFC virtual endstop '%s' from [nfc_gate %s] on drive %d",
+            self.endstop_name, self._nfc_gate_name, gate_number)
 
     def _get_nfc_gate(self):
         if self._nfc_gate is None:
