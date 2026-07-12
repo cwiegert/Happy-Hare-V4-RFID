@@ -80,10 +80,10 @@ class MmuNfcEndstop:
                 "logical Happy Hare gate number"
                 % (self.name, self._nfc_gate_name))
 
-        endstops_by_gate = getattr(mmu, '_nfc_endstops_by_gate', None)
-        if endstops_by_gate is None:
-            endstops_by_gate = {}
-            setattr(mmu, '_nfc_endstops_by_gate', endstops_by_gate)
+        # The rail belongs to Happy Hare, but the binding registry does not.
+        # Keep extension bookkeeping on NFCGate instead of injecting a private
+        # attribute onto Happy Hare's MmuController.
+        endstops_by_gate = nfc_gate.__class__._nfc_endstops_by_gate
 
         existing_for_gate = endstops_by_gate.get(gate_number)
         if existing_for_gate is not None and existing_for_gate is not self:

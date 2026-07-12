@@ -180,7 +180,9 @@ spoolman_auto_create: False
 > If QIDI tags fail to rich-read, see the
 > [QIDI Box RFID reference](qidi-rfid-reference.md): QIDI's own tag guide
 > places the payload in sector 1/block 0 (absolute block 4) and notes a
-> QIDI-specific sector 1 Key A in addition to the factory fallback key.
+> QIDI-specific sector 1 Key A in addition to the factory fallback key. The
+> current code implements only the factory-key attempt; the QIDI-specific key
+> is diagnostic/future work, so tags requiring it currently remain UID-only.
 >
 > Creality CFS/K1/K2 does not use the default key at all: its sector 1 is
 > protected by a Key B derived per-tag from the UID

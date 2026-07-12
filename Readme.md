@@ -128,6 +128,7 @@ values for scan-jog left-neighbor interference handling.
 | [Commands & Macros](docs/shared/klipper-functions.md) | User commands, shared commands, callback macros |
 | [Message Definitions](docs/shared/message_definition.md) | Console output and matching `nfc_reader.log` entries |
 | [Spoolman Integration](docs/shared/spoolman-integration.md) | Extra field setup, UID registration, lookup behavior |
+| [QIDI Box RFID Reference](docs/shared/qidi-rfid-reference.md) | QIDI sector layout, material codes, and authentication troubleshooting |
 | [Troubleshooting](docs/i2c-nfc/troubleshooting.md) | Startup errors, reader failures, tag lookup issues |
 | [How It Works](docs/shared/how-it-works.md) | Boot sequence, poll flow, scan-jog, dispatch layers |
 | [V4 Implementation Log](docs/shared/v4-implementation-log.md) | Implemented V4 changes, verification, and open runtime work |

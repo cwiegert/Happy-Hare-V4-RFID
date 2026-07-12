@@ -928,6 +928,9 @@ class NFCGateDefaults:
 class NFCGate:
     _active_scan_gate = None  # class-level scan lock; shared across all instances
     _scan_queue = []  # gate numbers waiting for their turn; only AUTO (hook) requests queue
+    # Extension-owned virtual-endstop registry. Happy Hare owns the gear rail,
+    # but the NFC endstop objects and their gate bindings belong to this add-on.
+    _nfc_endstops_by_gate = {}
 
     def __init__(self, config, defaults=None):
         self.printer  = config.get_printer()
