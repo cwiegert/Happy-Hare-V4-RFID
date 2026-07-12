@@ -246,7 +246,11 @@ The consolidated documentation pass is complete. Its checklist and outcome:
 - The generic `_MMU_EVENT`/`gate_map_changed` macro hook remains the right catch-all for gate-map changes that *don't* go through a preload at all — e.g. a user manually running `MMU_GATE_MAP SPOOLID=... GATE=...` from the console.
 - `mmu:gate_selected` is still right for anything that only needs "what gate is currently active" in general — e.g. status displays.
 
-**Persistence, unchanged by any of this:** `mmu.gate_maps`'s arrays remain backed by `SaveVariableManager`/`mmu_vars.cfg` (confirmed, `mmu_gate_maps.py:167-176`) as the sole persisted source of truth. Nothing in this section introduces a second store — what's cached on the NFC side is a transient, in-memory convenience, never authoritative, never separately persisted.
+**Current persistence behavior:** `mmu.gate_maps`'s arrays remain backed by
+`SaveVariableManager`/`mmu_vars.cfg` as the sole persisted source of truth.
+NFC-side UID/identity state is currently transient and is not a second store.
+§2.12 intentionally extends the existing gate-map schema so those values join
+the same source of truth instead of creating separate NFC persistence.
 
 **Section complete 2026-07-12.** Code landed: the poll-loop trigger was removed,
 poll-suppression/ejection-detection were kept, and multi-gate queuing was added
@@ -402,14 +406,154 @@ for name, cls in sorted(COMMAND_REGISTRY.items()):
 
 **Scope note:** touches every command entry point this add-on exposes (`NFC`, `NFC_SHARED`, `NFC_STATUS`, `NFC_HELP`, `NFC_DOCTOR`, `NFC_REGISTER`, `NFC_LED_TEST`). A real, distinct reformatting pass, and a consistency/ergonomics upgrade rather than a blocker for anything else in this plan — but sequencing is secondary to the open question above. **Don't start implementation before moggieuk confirms the out-of-tree usage pattern is actually intended for a separate package** — building against a guessed answer risks committing to the `printer.cfg` include-order requirement (§4 checklist) for nothing, if the real answer turns out to be "no, that path is only for in-tree modules."
 
+### 2.12 Gate-map state-ownership migration — 🔴 high risk, design approval required
+
+> [!CAUTION]
+> This is a cross-project state-model migration, not a cache cleanup. It must
+> not be implemented as one large edit or bundled casually with the remaining
+> V4 motion work. No existing NFC state, seeding, command, or recovery path
+> should be removed until the replacement has passed compatibility and live
+> hardware validation and has a tested rollback path.
+
+Happy Hare's gate map should become the sole source of truth for the spool and
+tag identity currently occupying each gate, alongside status, filament
+metadata, color, temperature, and speed override. Once UID and
+`spool_identity` are persisted there, there is no reason for
+`GateState.current_uid` or `GateState.current_spool` to remain a second
+authoritative copy. The entire startup-seeding and NFC-cache reconciliation
+design should be replaced with direct gate-map reads and writes.
+
+Add two per-gate persisted values to Happy Hare's `_gate_map_vars` definition,
+with final constant names agreed upstream, for example:
+
+```python
+(VARS_MMU_GATE_RFID_UID, 'gate_rfid_uid')
+(VARS_MMU_GATE_SPOOL_IDENTITY, 'gate_spool_identity')
+```
+
+Implementation requirements:
+
+1. Define the new save-variable constants and initialize both arrays to one
+   empty value per configured gate. Normalize older `mmu_vars.cfg` data so an
+   upgrade safely fills missing or short arrays without losing the existing
+   gate map.
+2. Expose UID, `spool_identity`, and the existing `spool_id` through
+   `MmuGateMaps` using the same persistence and
+   per-unit namespace rules as the existing gate-map fields. Provide an
+   explicit setter/update API rather than having this extension mutate arrays
+   and call private persistence helpers itself.
+3. Replace `GateState.current_uid` and `GateState.current_spool` as stable lane
+   state. `GateState` should retain only transient read/debounce concerns such
+   as the current in-progress `CurrentTag`, miss count, and absence threshold.
+   Once a read is accepted, stable UID, identity, and spool lookups must come
+   from `mmu.gate_maps`, not from the NFC state manager.
+4. Rewrite all consumers that currently read the NFC cache. This includes
+   normal change detection, polling suppression, `_hh_gate_matches_current_spool`,
+   `NFC_STATUS`, scan-jog's previous/current/left-neighbor UID, spool and
+   identity helpers, tag-handler left-neighbor checks, post-rewind restore, and
+   any macro dispatch that needs the accepted gate assignment.
+5. Delete the one-shot Happy Hare seeding layer: `_hh_seed_spool_id`,
+   `_hh_seed_available`, `_seed_cache_from_hh()`, `HH_SYNC`,
+   `NFC_HH_SYNC_CACHE`, `_NFC_HH_SYNC_ONE`, and seed-match dispatch
+   suppression should no longer be needed. Startup should read the persisted
+   gate map directly. The first physical read compares against that state; a
+   mismatch follows the normal changed-spool path.
+6. Write UID, `spool_identity`, and spool ID together after an accepted tag
+   resolution so observers never see a newly updated spool with stale tag
+   identity. A UID-only/Spoolman result may have an empty identity; rich Bambu,
+   TigerTag, and Creality reads populate all available fields. Prefer one
+   atomic public gate-map update operation with one persistence/event cycle.
+7. Clear UID and `spool_identity` whenever the physical gate is
+   cleared/ejected, the NFC spool is removed, or a gate-map reset replaces
+   that gate's assignment. Changing only `spool_id` must have an explicitly
+   defined policy so stale tag identity cannot silently remain attached to a
+   different spool.
+8. Retire or redefine cache-oriented user commands. `CLEAR_CACHE=1` and
+   `APPLY=1` currently operate on `GateState`; after the rewrite they must
+   either operate explicitly on the gate map or be removed. Spoolman's HTTP
+   response cache and `spoolman_cache_ttl` remain valid and are not part of
+   this removal.
+9. Add the fields to status/diagnostic output and test restart persistence,
+   multi-unit namespaces, gate-count migration, removal clearing, manual gate
+   remapping, atomic updates, offline tag swaps, and same-spool left-neighbor
+   checks after restart.
+
+Spoolman's UID extra field remains the durable **UID → spool record** mapping.
+The new gate-map values answer a different question: **which physical tag and
+same-spool identity currently occupy this gate**. Persisting them in
+`MmuGateMaps` provides consistent ownership and removes the duplicated NFC lane
+cache rather than merely adding another persistence store.
+
+#### Required delivery phases and gates
+
+**Phase A — design contract, no behavior change**
+
+- Agree with Happy Hare maintainers on field names, types, public API, event
+  behavior, persistence frequency, per-unit namespace rules, and ownership of
+  clear/reassignment semantics.
+- Document invariants for the `(spool_id, uid, spool_identity)` tuple, including
+  valid partial states and exactly which operations may change each field.
+- Inventory every current `GateState.current_uid/current_spool`, seed, cache,
+  scan-jog, shared-reader, macro, status, and recovery caller before coding.
+
+**Gate A:** maintainer review and explicit approval of the schema/API contract.
+
+**Phase B — additive Happy Hare support**
+
+- Add persisted fields, migration normalization, public read/update/clear APIs,
+  status exposure, and tests without changing this extension's behavior.
+- Prove existing V4 installations load old `mmu_vars.cfg` safely and that
+  persistence does not create excessive save-variable writes.
+
+**Gate B:** Happy Hare tests pass and an exact minimum compatible revision is
+available for installation and rollback.
+
+**Phase C — dual-read/dual-write migration mode**
+
+- Keep the existing NFC state and commands operational while mirroring accepted
+  state into `MmuGateMaps`.
+- Compare both stores continuously and log mismatches with enough context to
+  diagnose ordering, restart, removal, and manual gate-map-edit problems.
+- Prefer the legacy state for behavior during this phase so a gate-map defect
+  can be disabled without losing the known-working path.
+
+**Gate C:** source tests plus live PN532/PN7160/RC522, scan-jog, shared-reader,
+multi-gate, restart, offline swap, removal, manual remap, and multi-unit testing
+show no unexplained divergence.
+
+**Phase D — gate map becomes authoritative**
+
+- Switch stable lookups to `MmuGateMaps`, but retain a temporary compatibility
+  fallback and a diagnostic comparison path for one release cycle.
+- Update commands and status output before deleting any old fields so operators
+  retain recovery and observability.
+
+**Gate D:** field soak period completed with documented upgrade and downgrade
+procedures and no unresolved data-loss or stale-identity reports.
+
+**Phase E — remove legacy NFC state/seeding**
+
+- Only now remove `GateState`'s stable UID/spool copies, Happy Hare seed/sync
+  machinery, obsolete command behavior, and compatibility fallback.
+- Keep migration tests permanently to protect upgrades from older releases.
+
+**Rollback requirement:** every phase must be reversible without hand-editing
+`mmu_vars.cfg`. Unknown/new fields must be safely ignored by the previous
+extension version, and disabling the new path must leave existing spool IDs and
+gate assignments intact.
+
 ---
 
 ## 3. New V4-core gaps this add-on would be filling
 
 Re-assessed after the deeper pass:
 
-1. **Tag-UID → gate/spool persistence beyond the 20-second `pending_spool_id` window** — unchanged, Spoolman's UID extra-field remains the correct durable store, no V4-core gap to fill.
-2. **NFC-as-endstop binding into the homing graph — not actually a gap.** First-pass framing was wrong: this repo already has a correct implementation (§2.2), just not yet exercised against real V4 hardware/Klipper. The "gap" is upstream `MmuUnit` not doing this binding automatically for `[mmu_nfc_reader]` — a nice-to-have upstream contribution, not a blocker for this add-on's own port.
+1. **Current gate tag identity persistence — open (§2.12).** Spoolman's UID
+   extra field remains the durable UID → spool-record mapping, but it does not
+   persist which tag currently occupies a Happy Hare gate. Add per-gate UID and
+   `spool_identity` fields to `MmuGateMaps` so gate state survives restart and
+   follows the same lifecycle/persistence rules as spool ID and filament data.
+2. **NFC-as-endstop binding into the homing graph — extension-owned, not a V4-core gap.** This repo already has the required implementation (§2.2). It attaches the extension's virtual endstop to Happy Hare's gear rail but does not require or propose an NFC endstop implementation inside Happy Hare.
 3. **A non-blocking continuous-motion primitive equivalent to `mmu_toolhead` manipulation — narrowed, not solved.** Technique A (§2.7) removes the urgency: it's proven, non-blocking, and covers the primary scan-jog use case. Only the true "never stop moving" variant remains genuinely open, and it now has a concrete, small implementation path (`do_move`/`get_position` polling) rather than being an unknown unknown.
 
 ---
@@ -426,6 +570,7 @@ Re-assessed after the deeper pass:
 - [ ] §2.4.1: decide this add-on's own installer/docs approach for the preload-hook opt-in (leave manual, or have `install.sh` offer to write `variable_user_post_preload_extension`) — now higher priority than originally scoped, since the poll-loop trigger is gone and the hook is the *only* automatic path (§2.4).
 - [x] **User-facing V4 documentation pass completed 2026-07-12.** Removed the stale IG-dev-only and V3/version-gating guidance; documented hook-only automatic triggering, AUTO request queuing, direct V4 state/endstop integration, shared-reader status, transitional driver ownership, and the still-open §2.7 motion/runtime limitation.
 - [ ] Verify the `printer.cfg` include-order requirement from §2.11 (`[include nfc/...]` before `[mmu_machine]`) actually holds for real installs before shipping any `BaseCommand`/`register_command()` adoption — a live-system check, not something source reading alone can guarantee across every user's config layout.
+- [ ] **§2.12 high-risk migration:** obtain design approval, deliver additive Happy Hare support, validate dual-write comparison on live hardware, complete an authority-cutover soak with rollback, and only then remove `GateState`'s duplicate stable values and the HH seed/cache-sync layer.
 - [ ] Note upstream's own known bugs that would otherwise silently affect a port if inherited: `MmuUnit.get_status()`'s `self.nfcs_readers` typo (dead per-gate-reader status field), and the `mmu_rfid_reader`/`mmu_nfc_reader` naming inconsistency between config prefix and gcode command names/logger.
 
 ---
@@ -442,6 +587,10 @@ Re-assessed after the deeper pass:
 8. **§2.11 (command registration)**: **not sequenced — open question for moggieuk, not just a "do it later" item.** A reformatting/consistency pass with no functional dependents elsewhere in this plan, but implementation shouldn't start until it's confirmed the out-of-tree `register_command()` path is actually meant for a fully separate package (§6). If confirmed, it's a "once the rest has stabilized" item as originally scoped; if not, this section needs a different approach entirely.
 9. **User-facing documentation (`install-uninstall.md`, `configuration.md`, `how-it-works.md`, etc.): one consolidated pass at the end**, not incremental edits alongside each code change — too much will shift as (1)-(8) land to make piecemeal doc fixes worthwhile.
 10. Keep driver/factory refreshes aligned with upstream ownership; do not reopen their internals as V4-port work unless an integration regression is found.
+11. **§2.12 gate-map state ownership**: execute only through its five explicit
+    phases and gates. Do not overlap legacy removal with schema introduction,
+    and do not schedule the authority cutover until live dual-write evidence and
+    a tested rollback procedure exist.
 
 ---
 

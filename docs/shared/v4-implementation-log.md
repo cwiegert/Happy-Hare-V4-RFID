@@ -32,6 +32,7 @@ None have run against a live V4 Klipper instance yet — all pass `py_compile`/`
 - **§2.8 is closed** — `shared_preload.py` has zero direct `mmu` API surface and `spoolman_client.py` remains version-neutral. The refreshed `tag_handler.py` needed one small V4 adaptation: its imported left-neighbor status read now goes through `NFCGate._read_hh_status_for_gate()` rather than restoring the deleted `hh_status` module.
 - **§2.10 is closed** — macro behavior did not change; comments were refreshed during the documentation pass. `_NFC_SCAN_JOG_PRELOAD`/`_NFC_SHARED_PRELOAD` still call the same gcode they did before.
 - **§2.11 marked ❓ open question for moggieuk/upstream, not just "not started"** — command-registration reformatting (adopt V4's `BaseCommand`/`COMMAND_REGISTRY` pattern) was identified and fully written up this session, including a verified load-order constraint, but whether `register_command()`'s out-of-tree path is actually meant for a fully separate package (vs. only in-tree-adjacent modules) isn't answerable from source alone. Implementation is deliberately not sequenced until moggieuk confirms — building against a guessed answer risks committing to the include-order requirement for nothing.
+- **§2.12 is a high-risk, approval-gated migration** — making `MmuGateMaps` authoritative affects two projects and every stable NFC lifecycle. It must proceed additively through schema approval, dual-write comparison, live soak, authority cutover, and only then legacy removal; no cache/seeding code should be deleted early.
 - **New §7, Shared Reader Migration Status** added to the porting plan — called out explicitly per direct request, not left implicit under the scan-jog-heavy §2.4/§2.6/§2.7 work. Confirms (via source, not assumption) that shared-reader is architecturally isolated from every scan-jog change made this session, and that its own two V3 patterns (item 8 above) are now fixed. Status: source-verified complete, same as everything else — real-hardware runtime testing is the one remaining gap.
 - **§2.1 local integration is complete, but Happy Hare cutover is blocked** — this repo's reader drivers/factory are current and retain `use_key_b`, but they cannot be deleted until Happy Hare's copies and import path satisfy the six cutover requirements below. **§2.7** also remains open.
 
@@ -68,6 +69,49 @@ the reintroduced `hh_status.read(...)` call with
 | §2.9 | `NFC_LEDManager.py` (was `LED_effect_mgr.py`) | **✅ Complete — 2026-07-12.** Renamed (file + class) and all V3 support removed (`is_happy_hare_v4()`, the V3 command format, `led_unit_index()`). The `printer`-attribute injection and effect-naming-convention risk remain, cosmetic/residual only |
 | §2.10 | `nfc_macros.cfg` and friends | **✅ Complete — 2026-07-12.** These macros should not change and don't; confirmed unaffected by the §2.4 trigger-removal/queue work |
 | §2.11 | GCode command registration (adopt `BaseCommand` pattern) | **❓ Open question for moggieuk/upstream — 2026-07-12.** Fully written up, including a verified `printer.cfg` include-order constraint, but not sequenced for implementation: whether `register_command()`'s out-of-tree path suits a fully separate package isn't verifiable from source, only from moggieuk |
+| §2.12 | Gate-map-backed spool/UID/`spool_identity` state | **🔴 High risk — design approval required.** Five gated phases: contract, additive HH support, dual-write validation, authority cutover/soak, then legacy removal |
+
+---
+
+## Happy Hare gate-map state-ownership migration — 🔴 high risk
+
+> [!CAUTION]
+> Do not treat this as an implementation-ready cleanup. The current NFC state
+> and seeding paths remain the recovery baseline until the phased §2.12 plan
+> passes maintainer approval, dual-write comparison, live hardware testing,
+> soak time, and rollback verification.
+
+Add per-gate UID and `spool_identity` fields to Happy Hare's persisted
+`MmuGateMaps` model (§2.12), then remove `GateState.current_uid` and
+`GateState.current_spool` as duplicate stable lane state. There is no
+maintenance benefit in copying spool/tag identity into the NFC state manager
+when status, filament metadata, color, temperature, spool ID, and speed
+override already share one persisted gate-map lifecycle.
+
+This action requires coordinated changes on both sides:
+
+- Happy Hare: constants, `_gate_map_vars`, default/migration normalization,
+  public update API, persistence, status exposure, per-unit namespacing, and
+  clear/reset behavior.
+- This extension: rewrite stable lookups to use `mmu.gate_maps`; remove the
+  one-shot Happy Hare seed/cache-sync system; keep only transaction-local tag
+  observations and absence debounce state; write accepted UID/identity/spool
+  atomically; and clear gate-map identity on physical removal.
+- Verification: restart persistence, old-variable migration, gate-count
+  changes, multi-unit behavior, manual gate-map edits, removal, offline swaps,
+  atomic updates, and left-neighbor identity checks after restart.
+
+The rewrite must cover normal polling, scan-jog snapshots and neighbor lookup,
+status output, external gate-map changes, rewind/restore behavior, and the
+existing `APPLY`/`CLEAR_CACHE`/`HH_SYNC` command surface. Spoolman's HTTP cache
+is separate lookup optimization and remains in place.
+
+Spoolman remains authoritative for UID → spool-record lookup. `MmuGateMaps`
+becomes authoritative for the UID and same-spool identity currently associated
+with each physical gate.
+
+**Current authorization/status:** documentation and design inventory only. No
+authority cutover or legacy cache removal is approved yet.
 
 ---
 
