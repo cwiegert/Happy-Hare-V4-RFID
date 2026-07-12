@@ -102,6 +102,10 @@ Known limitations
   A, then the default key, then the Creality Key B, in that order.  The
   legacy ``_try_creality_cfs()`` hex-ASCII heuristic only runs against
   unauthenticated raw dumps and is unconfirmed against real hardware.
+- QIDI's official RFID guide documents FM11RF08S tags with the payload in
+  sector 1/block 0 (absolute block 4): byte 0 material, byte 1 color, byte 2
+  manufacturer.  If QIDI rich reads fail, also validate the QIDI-specific
+  sector 1 Key A noted in docs/shared/qidi-rfid-reference.md.
 - Factory Bambu tags carry an RSA-2048 signature; the Bambu printer firmware
   validates this signature so official firmware will reject reprogrammed tags.
   Writing Tray UID / spool metadata to custom (blank) MIFARE Classic tags
@@ -1219,6 +1223,11 @@ _CREALITY_MATERIAL_MAP: dict[str, str] = {
 # Length code -> spool weight in grams, from Creality's tag-writer table.
 _CREALITY_LENGTH_TO_WEIGHT_G: dict[str, int] = {"0330": 1000, "0165": 500}
 
+# Vendor ID -> name, from DnG-Crafts/K2-RFID's Creality tag examples/writers.
+_CREALITY_VENDOR_MAP: dict[str, str] = {
+    "0276": "Creality",
+}
+
 
 def _try_creality_tag(blocks: dict) -> Optional[dict]:
     """Parse a Creality CFS/K1/K2 tag from authenticated sector-1 blocks.
@@ -1229,9 +1238,12 @@ def _try_creality_tag(blocks: dict) -> Optional[dict]:
     Creality tags, which is why this only runs as a third fallback in
     tag_handler.read_current_tag().
 
-    Decrypted payload layout (48 ASCII bytes):
-      batch(3) + date(5, YYMDD) + supplier(4) + material(5) + color(7,
-      "0RRGGBB") + length(4) + serial(6) + reserve(14)
+    Decrypted payload layout, aligned to DnG-Crafts/K2-RFID:
+      date(5, MDDYY) + vendor_id(4) + batch(2) + filament_id(6) +
+      color(7, "0RRGGBB") + length(4) + serial(6) + reserve/trailing data.
+
+    DnG's writers build filament_id as a 1-character printer/type prefix plus
+    the 5-character material code used by Creality's material database.
     """
     if not _PYCRYPTODOME_OK:
         return None
@@ -1242,29 +1254,39 @@ def _try_creality_tag(blocks: dict) -> Optional[dict]:
         ascii_data = _creality_decrypt_tag_data(b4, b5, b6).decode("ascii")
     except Exception:
         return None
-    if len(ascii_data) < 48 or not ascii_data.isprintable():
+    if len(ascii_data) < 40 or not ascii_data.isprintable():
         return None
 
-    batch         = ascii_data[0:3]
-    date          = ascii_data[3:8]
-    supplier      = ascii_data[8:12]
-    material_code = ascii_data[12:17]
+    date_code     = ascii_data[0:5]
+    vendor_id     = ascii_data[5:9]
+    batch         = ascii_data[9:11]
+    filament_id   = ascii_data[11:17]
+    material_code = filament_id[1:]
     color         = ascii_data[17:24]
     length        = ascii_data[24:28]
     serial        = ascii_data[28:34]
 
     # Sanity check: material/color fields must look like the encoder's own
     # format, otherwise this is the wrong key/tag rather than valid data.
-    if not material_code.isdigit() or not re.fullmatch(r"[0-9A-Fa-f]{7}", color):
+    if (not filament_id.isdigit()
+            or not material_code.isdigit()
+            or not re.fullmatch(r"[0-9A-Fa-f]{7}", color)):
         return None
 
+    vendor_name = _CREALITY_VENDOR_MAP.get(vendor_id)
     info: dict = {
-        "brand": "Creality",
+        "brand": vendor_name or "Creality",
         "tag_format": "creality",
         "creality_batch": batch,
-        "creality_supplier": supplier,
+        "creality_date_code": date_code,
+        "creality_vendor_id": vendor_id,
+        "creality_supplier": vendor_id,
+        "creality_filament_id": filament_id,
+        "material_code": material_code,
         "creality_serial": serial,
     }
+    if vendor_name:
+        info["creality_vendor"] = vendor_name
     info["material"] = _CREALITY_MATERIAL_MAP.get(
         material_code, "Unknown (%s)" % material_code)
 
@@ -1276,9 +1298,13 @@ def _try_creality_tag(blocks: dict) -> Optional[dict]:
     if weight_g:
         info["weight_g"] = weight_g
 
-    if len(date) == 5 and date.isdigit():
-        info["creality_production_date"] = "20%s-%s-%s" % (
-            date[0:2], date[2:3].zfill(2), date[3:5])
+    if len(date_code) == 5 and date_code.isdigit():
+        month = int(date_code[0])
+        day = int(date_code[1:3])
+        year = int(date_code[3:5])
+        if 1 <= month <= 9 and 1 <= day <= 31:
+            info["creality_production_date"] = "20%02d-%02d-%02d" % (
+                year, month, day)
 
     return info
 
@@ -1340,15 +1366,15 @@ def _try_creality_cfs(raw: bytes) -> Optional[dict]:
 
 _QIDI_MATERIALS: dict[int, str] = {
     1: "PLA", 2: "PLA Matte", 3: "PLA Metal", 4: "PLA Silk", 5: "PLA-CF",
-    6: "PLA-Wood", 7: "PLA Basic", 8: "PLA Matte Basic", 10: "Support For PLA",
+    6: "PLA-Wood", 7: "PLA Basic", 8: "PLA Matte Basic",
     11: "ABS", 12: "ABS-GF", 13: "ABS-Metal", 14: "ABS-Odorless",
-    18: "ASA", 19: "ASA-AERO", 20: "ASA-CF", 23: "PC", 24: "UltraPA",
+    18: "ASA", 19: "ASA-AERO", 24: "UltraPA",
     25: "PA-CF", 26: "UltraPA-CF25", 27: "PA12-CF", 30: "PAHT-CF",
     31: "PAHT-GF", 32: "Support For PAHT", 33: "Support For PET/PA",
-    34: "PC/ABS-FR", 35: "TPEE", 36: "PEBA", 37: "PET-CF", 38: "PET-GF",
-    39: "PETG Basic", 40: "PETG Tough", 41: "PETG Rapido", 44: "PETG-CF",
-    45: "PETG Translucent", 46: "PPS-GF", 47: "PVA", 48: "TPU-AERO 64D",
-    49: "TPU-Aero", 50: "TPU 95A-HF",
+    34: "PC/ABS-FR", 37: "PET-CF", 38: "PET-GF", 39: "PETG Basic",
+    40: "PETG Tough", 41: "PETG Rapido", 42: "PETG-CF",
+    43: "PETG-GF", 44: "PPS-CF", 45: "PETG Translucent", 47: "PVA",
+    49: "TPU-Aero", 50: "TPU",
 }
 
 _QIDI_COLORS: dict[int, str] = {
@@ -1366,7 +1392,7 @@ def _try_qidi_box(raw: bytes) -> Optional[dict]:
     Sector 1 Block 0 (byte offset 64):
         Byte 0: Material code (1-50)
         Byte 1: Color code (1-24)
-        Byte 2: Manufacturer code (0=Generic, 1=QIDI)
+        Byte 2: Manufacturer code (default 1=QIDI)
 
     Note: MIFARE Classic 1K requires sector-key auth; parser runs only if data is available.
     """
@@ -1391,12 +1417,20 @@ def _try_qidi_box(raw: bytes) -> Optional[dict]:
 
     material = _QIDI_MATERIALS.get(mat_code, f"Unknown({mat_code})")
     color_hex = _QIDI_COLORS.get(col_code, "")
-    brand = "QIDI" if mfg_code == 1 else "Generic"
+    if mfg_code == 1:
+        brand = "QIDI"
+    elif mfg_code == 0:
+        brand = "Generic"
+    else:
+        brand = f"Unknown({mfg_code})"
 
     return {
         "material": material,
         "brand": brand,
         "color_hex": color_hex,
+        "material_code": mat_code,
+        "color_code": col_code,
+        "manufacturer_code": mfg_code,
         "diameter_mm": 1.75,
         "tag_format": "qidi",
     }

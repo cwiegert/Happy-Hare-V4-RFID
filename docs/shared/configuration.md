@@ -177,6 +177,10 @@ spoolman_auto_create: False
 > **confirmed** correct for QIDI Box tags (sourced from the community
 > `BoxRFID-Touch` project, which authenticates block 4 with this exact key
 > before reading/writing material/color/manufacturer codes).
+> If QIDI tags fail to rich-read, see the
+> [QIDI Box RFID reference](qidi-rfid-reference.md): QIDI's own tag guide
+> places the payload in sector 1/block 0 (absolute block 4) and notes a
+> QIDI-specific sector 1 Key A in addition to the factory fallback key.
 >
 > Creality CFS/K1/K2 does not use the default key at all: its sector 1 is
 > protected by a Key B derived per-tag from the UID

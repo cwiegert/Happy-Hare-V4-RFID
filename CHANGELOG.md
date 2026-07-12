@@ -53,6 +53,12 @@ confirmation.
   reading/writing material/color/manufacturer codes. Creality CFS's real key
   turned out to be neither the default key nor a simple custom key — see
   "Creality CFS/K1/K2 AES Tag Support" below.
+- 🐛 **QIDI material lookup aligned to QIDI's RFID guide** — corrected the
+  QIDI material code table used by `_try_qidi_box()` so codes 42-50 match
+  the official wiki values (`PETG-CF`, `PETG-GF`, `PPS-CF`, `TPU`, etc.)
+  and wiki-reserved/blank codes remain reported as `Unknown(n)`. Parsed QIDI
+  metadata now also keeps the raw `material_code`, `color_code`, and
+  `manufacturer_code` for debugging real tags.
 - 🐛 **Default-key retry enabled and restructured** in `read_current_tag()`.
   Previously it only fired if Bambu key *derivation* succeeded and then
   every sector's *authentication* failed — meaning it silently never ran at
@@ -111,7 +117,7 @@ call always releases the target.
   material table) — neither is a secret withheld from the docs.
 - ✨ **New parser** — added `_try_creality_tag()` (structured like
   `_try_tigertag()`) that decrypts and field-splits the payload: batch,
-  production date, supplier, material code (mapped via
+  production date code, vendor ID, filament ID / material code (mapped via
   `_CREALITY_MATERIAL_MAP`), color, spool weight (via
   `_CREALITY_LENGTH_TO_WEIGHT_G`), and serial. Registered in `parse_tag()`
   under the authenticated block-dict branch, tried right after Bambu's block
@@ -119,6 +125,13 @@ call always releases the target.
   hex-ASCII heuristic (unauthenticated, unconfirmed, `tag_format:
   "creality_cfs"`) is kept as a fallback for raw dumps but is no longer the
   primary Creality path.
+- 🐛 **Creality payload slicing aligned to `DnG-Crafts/K2-RFID`** — the AES
+  parser now treats the decrypted payload as
+  `date + vendor_id + batch + filament_id + color + length + serial + reserve`.
+  The on-tag `filament_id` is preserved, while its trailing 5-character
+  material code is still used for `_CREALITY_MATERIAL_MAP` lookup. The common
+  vendor ID `0276` resolves to `Creality`; the raw ID is also stored as
+  `creality_vendor_id` and the legacy `creality_supplier` alias.
 - ✨ **Key B support added to all three reader drivers** —
   `mifare_read_authenticated_blocks()` gained a `use_key_b` parameter in
   `pn532_driver.py`, `pn7160_driver.py`, and `rc522_driver.py`, threaded down

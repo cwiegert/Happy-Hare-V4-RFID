@@ -220,7 +220,7 @@ The bundled rich-tag parser currently recognizes these manufacturer spool tag fo
 | Anycubic | ACE binary tags on NTAG213/215 |
 | TigerTag | TigerTag / TigerTag+ binary tags on NTAG213/215/216; local core metadata only, no cloud lookup or signature verification. Also extracts the Twin Tag ID (same-spool pairing key for TigerTag's two-tags-per-spool design) as `spool_identity`, used for left-neighbor interference detection the same way Bambu's `tray_uid` is. |
 | Creality | CFS / K1 / K2 MIFARE Classic tags; requires `bambu_reads: True` and `pycryptodome`. Sector 1 uses a UID-derived Key B plus an AES-128-ECB-encrypted payload (both **confirmed**, community-sourced) — not the plain default key. |
-| QIDI | QIDI Box MIFARE Classic tags; requires `bambu_reads: True` (gates the default-key fallback attempt — no `pycryptodome` needed). Authenticates with the plain MIFARE Classic factory default key, `FF FF FF FF FF FF` — **confirmed**, sourced from the community `BoxRFID-Touch` project. |
+| QIDI | QIDI Box MIFARE Classic tags; requires `bambu_reads: True` (gates the default-key fallback attempt — no `pycryptodome` needed). Authenticates with the plain MIFARE Classic factory default key, `FF FF FF FF FF FF` — **confirmed**, sourced from the community `BoxRFID-Touch` project. If reads fail on real QIDI tags, see the [QIDI Box RFID reference](qidi-rfid-reference.md) for the official sector/block layout and QIDI-specific Key A note. |
 | SimplyPrint / QIDI standard URL | NDEF URI/Text tags with supported filament query fields |
 
 It also recognizes open rich-tag formats: OpenTag3D, OpenSpool, OpenPrintTag, and generic NDEF JSON filament records.
@@ -235,7 +235,7 @@ It also recognizes open rich-tag formats: OpenTag3D, OpenSpool, OpenPrintTag, an
 > | Key | Hex | ASCII | Used for |
 > |---|---|---|---|
 > | `AES_KEY_GEN` | `71 33 62 75 5E 74 31 6E 71 66 5A 28 70 66 24 31` | `q3bu^t1nqfZ(pf$1` | AES-128-ECB-encrypting the tag UID (repeated to 16 bytes) to derive the sector-1 MIFARE Key B — first 6 bytes of the ciphertext are the key. |
-> | `AES_KEY_CIPHER` | `48 40 43 46 6B 52 6E 7A 40 4B 41 74 42 4A 70 32` | `H@CFkRnz@KAtBJp2` | AES-128-ECB-decrypting the 48-byte ASCII payload stored across sector 1 blocks 4-6 (batch, date, supplier, material code, color, length code, serial, reserve). |
+> | `AES_KEY_CIPHER` | `48 40 43 46 6B 52 6E 7A 40 4B 41 74 42 4A 70 32` | `H@CFkRnz@KAtBJp2` | AES-128-ECB-decrypting the ASCII payload stored across sector 1 blocks 4-6 (date code, vendor ID, batch, filament ID/material code, color, length code, serial, reserve/trailing data). |
 >
 > Both are static, UID-independent AES-128-ECB keys (no IV, no per-tag salt
 > beyond the UID feeding `AES_KEY_GEN`). Reading a Creality tag therefore
