@@ -557,12 +557,38 @@ def resolve_continuous_pending_uid(gate, now):
     previous_identity = getattr(gate, '_scan_previous_spool_identity', None)
     if (uid == previous_uid and previous_spool is not None
             and previous_spool is not DIRECT_METADATA_SPOOL):
-        if getattr(gate, '_tag_parsing', False) and not previous_identity:
+        if gate._spoolman is not None:
+            try:
+                spool_id = gate._spoolman.lookup_spool_by_uid(uid)
+            except Exception:
+                logger.exception(
+                    "[%s]: continuous scan Spoolman UID lookup failed for "
+                    "matched stashed uid=%s",
+                    gate._name.capitalize(), uid)
+                spool_id = None
+            if spool_id is not None:
+                _cache_continuous_resolved_uid(
+                    gate, uid, spool_id, 'scan_previous_uid_spoolman_lookup',
+                    spool_identity=previous_identity)
+                if gate._debug >= 3:
+                    logger.info(
+                        "[%s]: continuous scan uid=%s matched stashed UID; "
+                        "Spoolman lookup resolved spool_id=%s "
+                        "spool_identity=%s",
+                        gate._name.capitalize(), uid, spool_id,
+                        previous_identity if previous_identity else "None")
+                return True
+            if gate._debug >= 3:
+                logger.info(
+                    "[%s]: continuous scan uid=%s matched stashed UID but "
+                    "Spoolman UID lookup missed",
+                    gate._name.capitalize(), uid)
+        if getattr(gate, '_tag_parsing', False):
             if gate._debug >= 3:
                 logger.info(
                     "[%s]: continuous scan uid=%s matched stashed UID/spool_id=%s "
-                    "but stashed spool_identity=None; forcing rich tag parse "
-                    "before left-neighbor interference check",
+                    "but no Spoolman UID match; forcing rich tag parse "
+                    "before spool_identity/auto-create checks",
                     gate._name.capitalize(), uid, previous_spool)
             return False
         _cache_continuous_resolved_uid(
@@ -590,14 +616,6 @@ def resolve_continuous_pending_uid(gate, now):
                 "[%s]: continuous scan uid=%s not found in Spoolman; "
                 "rich tag parse will run after hit-window recenter if enabled",
                 gate._name.capitalize(), uid)
-        return False
-    if getattr(gate, '_tag_parsing', False):
-        if gate._debug >= 3:
-            logger.info(
-                "[%s]: continuous scan uid=%s resolved through Spoolman "
-                "after move complete: spool_id=%s but spool_identity=None; "
-                "forcing rich tag parse before interference check",
-                gate._name.capitalize(), uid, spool_id)
         return False
     _cache_continuous_resolved_uid(gate, uid, spool_id, 'continuous_uid_lookup')
     if gate._debug >= 3:

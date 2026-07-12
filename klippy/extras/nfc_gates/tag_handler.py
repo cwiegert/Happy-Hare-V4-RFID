@@ -14,6 +14,7 @@
 
 import inspect
 
+from . import hh_status
 from .LED_effect_mgr import (
     EVENT_AUTO_CREATE, EVENT_UNRESOLVED, LEDEffectManager)
 from .gate_state import CurrentTag, DIRECT_METADATA_SPOOL
@@ -238,6 +239,50 @@ def _spool_identity_from_meta(meta):
         return None
     value = str(meta.get('spool_identity') or '').strip()
     return value or None
+
+
+def _left_neighbor_identity_match(gate, identity):
+    identity = str(identity or '').strip()
+    if not identity or getattr(gate, '_gate', 0) <= 0:
+        return False
+    left_gate = gate._gate - 1
+    left_nfc = gate._nfc_gate_for_gate_number(left_gate)
+    if left_nfc is None:
+        if gate._debug >= 3:
+            logger.info(
+                "[%s]: gate %d — spool_identity=%s left-neighbor "
+                "pre-create check: gate %d has no NFC instance",
+                gate._name, gate._gate, identity, left_gate)
+        return False
+    left_tag = getattr(left_nfc._state, 'current_tag', None)
+    left_identity = (
+        getattr(left_tag, 'spool_identity', None)
+        if left_tag is not None else None)
+    if not left_identity:
+        if gate._debug >= 3:
+            logger.info(
+                "[%s]: gate %d — spool_identity=%s left-neighbor "
+                "pre-create check: gate %d has no spool_identity",
+                gate._name, gate._gate, identity, left_gate)
+        return False
+    left_hh = hh_status.read(gate.printer, left_gate)
+    if left_hh.present and not left_hh.available:
+        if gate._debug >= 3:
+            logger.info(
+                "[%s]: gate %d — spool_identity=%s left-neighbor "
+                "pre-create check: gate %d identity=%s suppressed "
+                "because Happy Hare reports gate empty (status=%d)",
+                gate._name, gate._gate, identity, left_gate, left_identity,
+                left_hh.status)
+        return False
+    match = str(left_identity) == identity
+    if gate._debug >= 3:
+        logger.info(
+            "[%s]: gate %d — spool_identity=%s left-neighbor "
+            "pre-create check: gate %d identity=%s -> %s",
+            gate._name, gate._gate, identity, left_gate, left_identity,
+            "match" if match else "no match")
+    return match
 
 
 # ── Tag classification ────────────────────────────────────────────────────────
@@ -799,6 +844,22 @@ def resolve_spool(gate, uid_hex):
         return None
 
     if gate._spoolman is None:
+        identity = (
+            getattr(tag, 'spool_identity', None) if tag is not None else None)
+        if (getattr(gate, '_scan_mode', False)
+                and _left_neighbor_identity_match(gate, identity)):
+            if tag is not None:
+                tag.resolution = {
+                    'path': 'left_neighbor_spool_identity',
+                    'spool_identity': identity,
+                }
+            if gate._debug >= 3:
+                logger.info(
+                    "[%s]: gate %d — uid=%s  spool_identity=%s matches "
+                    "left neighbor; deferring metadata-direct assignment "
+                    "to scan-jog interference handling",
+                    gate._name, gate._gate, uid_hex, identity)
+            return None
         if material or color:
             if tag is not None:
                 tag.resolution = {'path': 'metadata_direct'}
@@ -881,6 +942,22 @@ def resolve_spool(gate, uid_hex):
             "checking whether metadata can create or directly represent a spool "
             "(material=%r color=%r)",
             gate._name, gate._gate, uid_hex, material, color)
+
+    identity = getattr(tag, 'spool_identity', None) if tag is not None else None
+    if (getattr(gate, '_scan_mode', False)
+            and _left_neighbor_identity_match(gate, identity)):
+        if tag is not None:
+            tag.resolution = {
+                'path': 'left_neighbor_spool_identity',
+                'spool_identity': identity,
+            }
+        if gate._debug >= 3:
+            logger.info(
+                "[%s]: gate %d — uid=%s  spool_identity=%s matches left "
+                "neighbor; deferring spool creation/resolution to "
+                "scan-jog interference handling",
+                gate._name, gate._gate, uid_hex, identity)
+        return None
 
     if tag is not None and getattr(tag, 'read_incomplete', False):
         if tag.resolution is None or not isinstance(tag.resolution, dict):
