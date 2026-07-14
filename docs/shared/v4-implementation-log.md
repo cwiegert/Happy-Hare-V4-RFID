@@ -64,12 +64,229 @@ the reintroduced `hh_status.read(...)` call with
 | §2.4.1 | V4 user-facing documentation | **✅ Complete — 2026-07-12.** Hook-only triggering, AUTO queue behavior, direct V4 state/endstop integration, shared-reader status, driver ownership, and open §2.7 limitations documented |
 | **§2.5** | **`hh_status.py` (direct reads)** | **✅ Complete — 2026-07-12.** File deleted entirely; content moved into `nfc_manager.py` as private helpers, reachable from `scan_jog.py` through the `NFCGate` object with zero import |
 | §2.6 | `nfc_manager.py` v3→v4 method mapping | **✅ Complete for `nfc_manager.py` — 2026-07-12.** `action` int/string fix (§2.5), two `get_status()` dict-parsing spots ported to direct reads, entire version-detection apparatus removed. The original table's motion-layer entries (`move_filament`, `wrap_accel`, `mmu_toolhead`, `gear_rail`, `gear_short_move_speed`) live in `scan_jog.py`, not this file — that's §2.7's still-open scope |
-| §2.7 | `scan_jog.py` motion (homing-move vs. continuous jog) | Not started |
+| §2.7 | `scan_jog.py` motion (homing-move vs. continuous jog) | **✅ Source port complete — 2026-07-12; critically reviewed and fixed across two passes 2026-07-13; hardware validation open.** Obsolete V3 continuous motion, compatibility probes, controller-level speed/rail access, private initializer fallback, and motion G-code fallbacks removed. Motion now uses direct V4 controller and per-gate drive APIs. 2026-07-13 pass 1: fixed two reactor-timer crash bugs (dangling `homing_jog_command()` call, unguarded `get_speed()` division by zero) and removed the now-dead continuous hit-window/trapezoid machinery, which also fixed a latent bug silently disabling the continuous decode-retry backtrack path. 2026-07-13 pass 2: added a top-level exception guard at `step_event()` (the shared reactor-timer entry point for both scan modes) with a safe no-further-motion abort path, fixed an unguarded `mmu` lookup in `start()`, fixed a cross-gate motion hazard in `shift_left_neighbor()`'s partial-failure path, and collapsed a ~40-line duplicated retry-move block in `retry_incomplete_decode()`. 2026-07-13 pass 3 (per direction): reordered the continuous decode-retry chain so the stationary re-read (`retry_continuous_overshoot_position()`) is tried before the directional backtrack jog (`queue_continuous_homing_backtrack_retry()`), and deleted the confirmed-unreachable `queue_continuous_post_backup_retry()` |
 | §2.8 | `tag_handler.py`, `spoolman_client.py`, `shared_preload.py` | **✅ Complete — refreshed 2026-07-12.** New RFID resolution logic retained; its left-neighbor HH read and LED import were adapted to the V4 `NFCGate`/`NFCLEDManager` boundaries |
 | §2.9 | `NFC_LEDManager.py` (was `LED_effect_mgr.py`) | **✅ Complete — 2026-07-12.** Renamed (file + class) and all V3 support removed (`is_happy_hare_v4()`, the V3 command format, `led_unit_index()`). The `printer`-attribute injection and effect-naming-convention risk remain, cosmetic/residual only |
 | §2.10 | `nfc_macros.cfg` and friends | **✅ Complete — 2026-07-12.** These macros should not change and don't; confirmed unaffected by the §2.4 trigger-removal/queue work |
 | §2.11 | GCode command registration (adopt `BaseCommand` pattern) | **❓ Open question for moggieuk/upstream — 2026-07-12.** Fully written up, including a verified `printer.cfg` include-order constraint, but not sequenced for implementation: whether `register_command()`'s out-of-tree path suits a fully separate package isn't verifiable from source, only from moggieuk |
 | §2.12 | Gate-map-backed spool/UID/`spool_identity` state | **🔴 High risk — design approval required.** Five gated phases: contract, additive HH support, dual-write validation, authority cutover/soak, then legacy removal |
+
+---
+
+## 2026-07-12 — §2.7: remove obsolete direct continuous-jog implementation
+
+Removed `run_direct_continuous_jog()` and all supporting code tied to the V3
+`mmu.mmu_toolhead` abstraction: manual lookahead flushing, MCU queue snapshots,
+direct-move completion accounting, `wrap_accel()`, and private gear-current
+restoration. That direct path had no V4 object to run against and was already
+unreachable from `run_continuous_jog()`.
+
+The user-facing `scan_motion_mode: continuous` behavior remains. Its forward
+search uses the verified V4 NFC homing move and virtual endstop; only the
+obsolete alternative implementation was removed.
+
+### Complete the V4-only motion cleanup
+
+Removed the remaining V3 compatibility functions and fallback branches from
+`scan_jog.py`. Short-move speed now comes from
+`mmu.drive(gate).mmu_unit.p.gear_short_move_speed`; gear position comes from
+the drive's `mmu_gear_stepper`; filament-position reset calls
+`initialize_filament_position()` directly; selection, homing, rewind, and jog
+motion call V4 methods without `hasattr()` probes or legacy G-code fallbacks.
+
+This completes §2.7 at the source-verification level. Real-hardware scan,
+decode-retry, left-neighbor clearance, and rewind testing remains required.
+
+---
+
+## 2026-07-13 — §2.7: critical review of the motion port found and fixed two crash bugs, plus a latent retry bug
+
+A critical read-through of the 2026-07-12 §2.7 motion cleanup (`scan_jog.py`)
+found two defects that were guaranteed or plausible reactor-timer crashes,
+and a chunking/trapezoid design question that led to a further, larger
+cleanup with one behavioral fix.
+
+**🐛 Fixed — `stopped_step_event()` called `homing_jog_command()`, a function
+the 2026-07-12 cleanup deleted.** Any stopped-mode scan-jog run with
+`debug: 4` hit a guaranteed `NameError` inside the scan reactor timer
+(confirmed via `ast`-based undefined-name static analysis, not just
+inspection). The dead debug-logging block was removed; the `[SCAN]` message
+already logged just above it covers the same information.
+
+**🐛 Fixed — `get_speed()` dropped its `speed > 0.0` validation.** The V3
+version guarded against a zero/negative `gear_short_move_speed` and fell back
+to 80 mm/s; the V4 rewrite returned
+`mmu.drive(gate).mmu_unit.p.gear_short_move_speed` unguarded, so a
+misconfigured or unset per-unit speed would raise `ZeroDivisionError` out of
+`chunk_interval()` — reachable from `resume_poll_after_rewind()`, inside the
+same reactor-timer call stack. Restored the same `80.0` floor, scoped to the
+invalid-value case only (not a "missing mmu" fallback — that hard dependency
+from the 2026-07-12 cleanup is intentional and unchanged).
+
+**♻️ Removed — the continuous-scan "hit window" / trapezoid position-estimate
+machinery**, after confirming by tracing every caller that it no longer does
+anything: `estimate_continuous_probe_position()`,
+`record_continuous_uid_hit()`, `continuous_uid_hit_window()`,
+`continuous_overshoot_backup_mm()`, `should_backup_before_rich_read()`,
+`queue_continuous_overshoot_backup()`, `log_continuous_uid_hit_window()`,
+`continuous_chunk_interval()`, and the dead non-homing branch of
+`run_continuous_jog()`/`continuous_move_source()`. This machinery existed to
+reconstruct where mid-flight a UID was detected during a *queued,
+non-blocking* move (V3's "Direct Move" technique, already removed
+2026-07-12) and then back up to the center of the observed detection window
+before a rich tag read. V4 continuous scanning uses `mmu.move_filament(...,
+wait=True, homing_move=...)` — a **blocking** NFC homing move that stops
+exactly where the endstop triggers. There is no non-blocking in-flight window
+left to estimate, and a homing-move stop can't overshoot by construction, so
+every hit-window computation had collapsed to a single degenerate point
+(`backup_mm` always ≈ 0).
+
+**🐛 Found and fixed in the same pass — `should_backup_before_rich_read()`
+was silently disabling the real backtrack retry.** In
+`continuous_step_event()`'s `if/elif` resolution chain, the degenerate
+hit-window check above returned `True` on essentially every continuous-scan
+UID whose rich-tag decode failed, won the `if` branch, performed a
+zero-length "backup" as a no-op, and — because it was an `if/elif` chain, not
+sequential `if`s — prevented `queue_continuous_homing_backtrack_retry()`
+(the real, still-relevant one-way backtrack retry) from ever running. The
+practical effect: a tag found via a continuous homing stop whose decode
+failed on the first read would silently continue scanning forward instead of
+retrying, losing that tag. Removing the dead branch restores the backtrack
+retry path. The equivalent dead branch in `retry_incomplete_decode()` (same
+`continuous_overshoot_backup_mm()` call, always-zero backup) was collapsed
+the same way, calling `queue_decode_retry_move()` directly.
+
+**Kept, deliberately:** `distance_from_trapezoid_time()` /
+`homing_distance_from_elapsed()` / `corrected_homing_actual()`. This solves a
+different problem — cross-checking `move_filament()`'s reported `actual`
+distance against an independent elapsed-time estimate, not mid-flight
+position — and whether V4's `move_filament()` has the same actual-distance
+reporting quirk HH v3 had is exactly the kind of thing that needs
+hardware validation, not a source-level judgment call.
+
+Verification for this pass: `py_compile`, an `ast`-based undefined-name sweep
+(clean), and `pyflakes` (clean except two pre-existing, unrelated warnings:
+an unused `info_both` import and an unused `gcode` local in `run_rewind()`,
+both present before this session's changes). None of this has run against
+real Klipper/hardware — see the critical-test list below.
+
+**Critical hardware tests before this lands as validated:**
+
+1. **Continuous-mode decode-retry backtrack** (highest priority — this is the
+   behavioral fix, not just cleanup). Force a rich-tag decode failure on the
+   first read after a continuous NFC homing stop (e.g. a tag positioned so
+   the first read is marginal) and confirm `queue_continuous_homing_backtrack_retry()`
+   actually fires: `_scan_decode_retry_mode` becomes `'homing_backtrack'`,
+   the gate jogs backward in `_scan_decode_retry_mm` steps, and the tag
+   either resolves within `_scan_decode_retry_rounds` attempts or the scan
+   cleanly rewinds and exits via `fail_continuous_uid_resolution_after_retries()`
+   rather than silently continuing the forward scan past the tag.
+2. **Stopped-mode scan-jog with `debug: 4`** — confirm the homing-move debug
+   path no longer throws (regression check for the `homing_jog_command()`
+   fix).
+3. **Continuous-mode scan-jog, full path** — normal rich-tag and UID-only
+   spools, end to end, confirming timing/console output still reads sensibly
+   with the trapezoid/hit-window logging gone.
+4. **Left-neighbor interference and rewind** — not touched directly by this
+   pass, but shares decode-retry state (`_scan_continuous_overshoot_backed_up`
+   and friends) with the paths above, so a light regression pass is
+   warranted.
+
+---
+
+## 2026-07-13, continued — fixed the two crash-risk findings still open, plus a critical-path review of the shared homing move and the decode-retry jog state machine
+
+Follow-up to the same-day pass above: fixed the two previously-reported
+findings that were left open (#2 and #4), then did a targeted critical
+review of `run_homing_jog()` (the "home to sensor" motion primitive shared
+by both `stopped_step_event()` and `continuous_step_event()`) and the
+unresolved-rich-read decode-retry jogging state machine, since both are
+reachable from either scan mode and both drive real gear motion.
+
+**🐛 Fixed — no exception guard anywhere between `select_gate_quiet()` /
+`run_homing_jog()` / `run_mmu_move()` and the Klipper reactor.** These call
+V4 mmu methods directly with no fallback and no guard of their own (by
+design, from the earlier V4-only cleanup) — but nothing wrapped their call
+sites in `stopped_step_event()`/`continuous_step_event()` either, so any
+transient failure (servo timeout, gate-table race) would propagate out of
+the reactor timer callback, which typically forces a full klippy shutdown.
+Added one `try/except` at `step_event()` — the single shared entry point for
+both motion modes — instead of chasing every jog call site individually.
+On failure it now logs loudly, consoles an `[ERROR]` telling the operator to
+verify the gate's physical position, and runs a new `abort_scan_on_error()`
+that tears down scan state (LEDs, the single-scan-at-a-time lock, queued
+gates, normal polling) **without** attempting further motion — a failed
+`select_gate`/`move_filament` means the physical position is unknown, so a
+recovery attempt could make it worse. `abort_scan_on_error()` deliberately
+does not reuse `resume_poll_after_rewind()` (that computes its delay via
+`chunk_interval()`/`get_speed()`, which touches `mmu` again right after
+`mmu` just failed) — it restarts polling after a fixed delay instead.
+
+**🐛 Fixed — `start()` looked up `'mmu'` outside its own try/except.** Per
+`NFCGate._get_mmu()`'s own docstring, `'mmu'` can legitimately be
+unregistered this early if config include order put this extension ahead of
+it. Moved the lookup inside the existing try/except so that race is handled
+the same way a failed `initialize_filament_position()` already was, instead
+of raising past it.
+
+**🐛 Found and fixed — `shift_left_neighbor()` could leave the wrong gate
+selected on partial failure, and a later rewind would silently drive it.**
+`select_gate_quiet(left_gate)` → clearance move → `select_gate_quiet(own
+gate)` all lived in one `try`, so if the clearance move failed *after*
+selecting the neighbor, the `except` returned `False` without ever
+reselecting `gate._gate`. The mmu was then left pointed at the **left
+neighbor's** gate while scan-jog's own bookkeeping still assumed its own
+gate was active. `run_rewind()`'s `run_mmu_move()` does not itself select a
+gate (it trusts whatever is already selected), so the next rewind would jog
+the *neighbor's* filament by `fast_rewind` mm — a genuine cross-gate motion
+hazard, not merely a wrong-log-message bug. Restructured so the reselect of
+`gate._gate` runs in a `finally`, unconditionally; if that reselect *itself*
+fails, it now raises (rather than being silently skipped), which
+`step_event()`'s new guard catches and aborts safely rather than continuing
+while the active gate is unknown. This bug predates this session — it is
+not something the 2026-07-12/13 V4 motion changes introduced — but it sits
+directly in the same motion-safety critical path.
+
+**♻️ Simplified — `retry_incomplete_decode()`'s stopped-mode fallback was a
+~40-line inline copy of `next_decode_retry_move()` + `queue_decode_retry_move()`**,
+duplicated instead of calling them (confirmed line-by-line equivalent:
+identical oscillating-offset math, identical jog/LED/logging tail, identical
+warning message text). Collapsed to a single call, matching the continuous-mode
+branch immediately above it. This was a real future-drift risk: any fix to
+the shared retry algorithm would have had to be made in two places to
+actually apply to both scan modes.
+
+**♻️ Resolved — the two retry-path findings above, per explicit direction:**
+
+- **Reordered** `continuous_step_event()`'s `elif` chain so
+  `retry_continuous_overshoot_position()` (stationary, no-motion re-read) is
+  checked **before** `queue_continuous_homing_backtrack_retry()` (directional
+  backtrack jog), matching the intent already stated in the former's own log
+  message ("retrying rich tag parse attempt %d/%d **before recenter**"). Now
+  every incomplete decode gets up to 3 free in-place re-reads (its own
+  `max_attempts=3`, tracked by the separate `_scan_continuous_overshoot_position_attempts`
+  counter, not `_scan_decode_retry_rounds`) before committing to a 5mm
+  backtrack jog — cheaper, and avoids moving a marginal-but-recoverable read
+  further out of the reader's range before even trying again in place. Pure
+  reordering; neither function's internals changed.
+- **Deleted** `queue_continuous_post_backup_retry()` and its dead call site
+  in `continuous_step_event()` — confirmed unreachable by control-flow
+  tracing (not just inspection), so removal changes no runtime behavior,
+  only removes a function that looked like it was part of the live retry
+  path when it never actually ran.
+
+**Confirmed intentional, not a bug:** the forward/backward asymmetry where
+positive decode-retry jogs go through `run_homing_jog()` (endstop-aware,
+can stop early) and negative ones go through `run_mmu_move()` (always
+travels the full requested distance) — the NFC virtual endstop is
+directional, so an early stop is only meaningful moving toward the tag, not
+away from it. Also confirmed dead, low-risk: `run_homing_jog()`'s
+`homing_move=-1` branch (`mm < 0`) — every caller only ever passes `mm > 0`,
+same as previously reported.
+
+Verification: `py_compile`, `ast` undefined-name sweep (clean), `pyflakes`
+(clean, same two pre-existing warnings as before). None of this has run
+against real hardware.
 
 ---
 

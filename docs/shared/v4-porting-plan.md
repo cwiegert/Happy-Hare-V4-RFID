@@ -300,10 +300,10 @@ Found via the same whole-file `mmu.<attr>` scan, same pattern already fixed once
 | `mmu.mmu_toolhead` (`.sync()`, `.get_position()`, `.move()`, manual lookahead-queue draining) | **gone — no equivalent object.** See §2.7 deep dive. | rebuild on `mmu.drive(gate).mmu_gear_stepper` (`do_move`, `do_homing_move`, `get_position` — confirmed on `MmuStepper`, `extras/mmu_stepper.py:864/873/1011`) |
 | `mmu.gate_selected` | **unchanged** attribute | keep as-is |
 | `mmu.gate_speed_override` | **unchanged** externally — now backed by an `@property` (`mmu_controller.py:1477`) over `gate_maps`, same list-like shape | keep as-is |
-| `mmu.gear_short_move_speed` | **relocated** — no flat controller attribute; now a per-unit config param | `mmu.drive(gate).mmu_unit.p.gear_short_move_speed` (`MmuDrive.mmu_unit` back-reference confirmed, `unit/mmu_drive.py:31`; param confirmed at `config/base/mmu_parameters.cfg:160`) |
+| `mmu.gear_short_move_speed` | **✅ Ported 2026-07-12** — no flat controller attribute; now a per-unit config param | `mmu.drive(gate).mmu_unit.p.gear_short_move_speed` (`MmuDrive.mmu_unit` back-reference confirmed, `unit/mmu_drive.py:31`; param confirmed at `config/base/mmu_parameters.cfg:160`) |
 | `mmu.num_gates` | **unchanged** | keep as-is |
-| `mmu.gear_rail` | **relocated** behind unit architecture | `mmu.drive(gate).mmu_gear_stepper.rail` |
-| `mmu._initialize_filament_position` / `mmu.initialize_filament_position` (existing dual-try in `scan_jog.py`) | V4 name confirmed: **`initialize_filament_position`**, no leading underscore (`mmu_controller.py:2008`) | dual-try already correct; can drop the `_initialize_filament_position` (V3) branch once V4-only |
+| `mmu.gear_rail` | **✅ Ported 2026-07-12** behind unit architecture | Position reads now use `mmu.drive(gate).mmu_gear_stepper.get_position()`; the NFC endstop binding uses the drive's stepper rail |
+| `mmu._initialize_filament_position` / `mmu.initialize_filament_position` | **✅ Ported 2026-07-12.** V4 name confirmed: `initialize_filament_position`, no leading underscore (`mmu_controller.py:2008`) | V3 dual-try removed; call the V4 method directly |
 
 **Bowden length lookup — concrete fix, not just "use an API instead of text-parsing":**
 
@@ -331,7 +331,7 @@ mmu.move_filament(
 
 Why this already satisfies the "needs to be non-blocking" requirement that originally motivated Technique B: Klipper's homing-move machinery runs the actual stepper motion at the trapq/MCU level, not in a Python loop — the only Python-side polling is `mmu_nfc_endstop.py`'s own `_poll_event` reactor timer checking the reader while `_homing` is true. That's the same non-blocking shape as any other Klipper endstop-triggered homing move. `home_wait()` → `_last_home_elapsed` also already feeds directly into the existing trapezoid position-correction math (`corrected_homing_actual`, `homing_distance_from_elapsed`) unchanged — that math has no Happy-Hare-version dependency at all, it's pure kinematics.
 
-**Technique B — direct continuous jog (`run_direct_continuous_jog`).** Directly manipulates `mmu.mmu_toolhead`: `.sync()`, `.get_position()`, `.move()`, plus manual lookahead-queue-drain bookkeeping (`_continuous_timing_snapshot`, `refresh_continuous_move_complete`) to know when a queued move finished without blocking the reactor.
+**Technique B — direct continuous jog (`run_direct_continuous_jog`) — removed 2026-07-12.** This directly manipulated `mmu.mmu_toolhead`: `.sync()`, `.get_position()`, `.move()`, plus manual lookahead-queue-drain bookkeeping to know when a queued move finished without blocking the reactor. The obsolete implementation and its V3-only timing state have now been deleted; the V4 NFC homing-move path remains authoritative.
 
 **Verified: there is no equivalent object in V4.** `mmu.mmu_toolhead` doesn't exist. A class named confusingly similarly, `MmuToolheadWrapper`, does exist (`extras/mmu/unit/mmu_toolhead_wrapper.py:58`) — but it is a completely different thing: an extruder/toolhead-entry **sensor bundle** (hall filament-width sensor, entry/toolhead switch sensors), with no `.move()`, `.get_position()`, or lookahead-queue concept at all. There is nothing to port Technique B onto; the abstraction it depended on was decomposed away in the V4 rewrite.
 
