@@ -290,6 +290,223 @@ against real hardware.
 
 ---
 
+## 2026-07-14 — shared-reader separation design work found `_has_per_lane_readers` is dead
+
+While designing how to extract the shared reader out of `NFCGate` into its
+own class (in support of Happy Hare eventually absorbing the state-engine
+role), mapped the actual shared-reader ↔ Happy Hare interface concretely:
+it's not just `MMU_GATE_MAP NEXT_SPOOLID`, it's a five-point stage → validate
+→ commit protocol (`_shared_stage_next_spool_id()`'s async-deferred
+`NEXT_SPOOLID` dispatch, `_shared_apply_bypass_spool()`'s bypass branch, and
+`_NFC_SHARED_PRELOAD`'s `PRELOAD_CHECK`/`PRELOAD_COMMIT`/`PRELOAD_CLEAR_ASSIGNED`
+handshake into `shared_preload.py`'s `SharedPreloadCoordinator`).
+
+**⚠️ Found — `NFCGate._has_per_lane_readers` is initialized `False` in two
+places in `nfc_manager.py` and never set `True` anywhere** (confirmed by
+grep across the whole file, not inference — no code populates it from the
+module-level `_lane_instances` registry). This matters because
+`SharedPreloadCoordinator.clear_assigned()` reads it to decide whether a
+Happy Hare gate-map assignment it's reconciling against was expected (a
+per-lane reader claimed the spool first) or unexpected (logged as a
+console warning). With the flag permanently `False`, every
+`PRELOAD_CLEAR_ASSIGNED` reconciliation on a hybrid (per-lane + shared)
+install takes the "unexpected assignment" warning branch even in the
+normal, expected case — not a crash, but a false-positive warning on every
+such reconciliation that would undermine trust in the message. Not fixed
+yet — added as an explicit action item in the porting plan (§4, §7) rather
+than fixed inline, since it sits directly on the interface boundary the
+shared-reader extraction needs to design (§7's separation plan), so it's
+worth resolving before that boundary is locked in rather than after.
+
+Not fixed this pass; not verified against real hardware (this is dead-code
+analysis, no code changed).
+
+---
+
+## 2026-07-14, continued — extracted `SharedNFCReader`; fixed `_has_per_lane_readers`
+
+Executed the separation plan above, minus the poll-engine split (deliberately
+deferred — see below). Scope was explicit: extract what's cleanly separable,
+split construction, fix the dead flag, verify nothing else breaks. Did not
+touch `_poll_timer_event()`/`_poll()`, `__init__`, or `_handle_connect()`'s
+structure.
+
+**✨ New `klippy/extras/nfc_gates/shared_reader.py`, `class SharedNFCReader(NFCGate):`.**
+Subclassing rather than a standalone class was the key decision that made
+this tractable within scope: since `SharedNFCReader` inherits `__init__` and
+`_handle_connect()` unmodified, and those already correctly initialize every
+shared-only attribute whenever `self._shared` is `True` (regardless of which
+class the instance actually is), none of that constructor logic needed to
+move or change. What moved: all ~38 `_shared_*`-named methods (identified
+by AST, not regex, after an earlier crude regex pass produced false
+positives on nested closures like `_run`/`mark`), plus `cmd_NFC_SHARED` and
+`_read_mmu_pending_timeout` (shared-only despite not having the `_shared_`
+prefix). `get_status()` was split rather than moved wholesale: the base
+`NFCGate` version now returns lane-only fields with the shared-only keys
+hardcoded to their empty defaults; `SharedNFCReader.get_status()` overrides
+it, calling `super().get_status()` then filling in the real
+`pending_spool_id`/`preload_spool_id`/`has_per_lane_readers`/etc. values —
+the standard template-method shape, and it keeps the external dict shape
+`printer['nfc_gate shared']` template code depends on identical.
+
+Mechanically: extracted exact method source via `ast` (`FunctionDef.lineno`/
+`end_lineno`), built a delete-mask over `nfc_manager.py`, removed all target
+ranges plus `get_status()`'s old body in one pass (not 39 sequential `Edit`
+calls — too fragile for this many non-contiguous, similarly-shaped
+deletions), and verified with `py_compile` + an AST-based undefined-name
+sweep before writing anything back. Found and fixed three import gaps this
+way (`shared_preload`, `rc522_driver` needed by `_shared_help()`'s low-level
+debug-command listing) that a naive text-based extraction would have missed
+until runtime.
+
+**Byproduct find:** the class body defined `shared_summary_line()` **twice**
+— Python silently keeps only the last definition, so the first (different
+output format) was dead code. Extraction naturally took the live version;
+confirmed via `ast` that this is exactly what happened, not an accidental
+drop.
+
+**♻️ `klippy/extras/nfc_gate.py`'s `load_config_prefix()`** now reads
+`config.getboolean('shared', False)` to choose `SharedNFCReader` vs
+`NFCGate` *before* constructing, instead of one constructor branching
+internally after the fact. No circular import: `nfc_gate.py` imports both
+`nfc_manager.py` and `shared_reader.py`; `shared_reader.py` imports
+`nfc_manager.py`; `nfc_manager.py` imports neither `shared_reader.py` nor
+`nfc_gate.py` — confirmed one-directional by grep, not just reasoned about.
+
+**🐛 Fixed — `_has_per_lane_readers`** (the finding above). Now computed in
+`_handle_connect()`: `any(not shared and enabled for g in _lane_instances)`.
+Timing works because `klippy:connect` fires only after every `[nfc_gate ...]`
+config section has already run `load_config_prefix()` and appended itself to
+`_lane_instances` — confirmed via Klipper's config-then-connect event
+ordering, not assumed.
+
+**Verified unaffected, not just assumed:** `shared_preload.py` needed zero
+changes (`SharedPreloadCoordinator` already duck-types its `gate` argument).
+The module-level registry (`_lane_instances`, `_shared_instance`) and
+Klipper's `printer['nfc_gate shared']` resolution both key off config
+section name / list membership, not Python class — grepped the whole
+`klippy/extras/` tree for `isinstance(..., NFCGate)` and found none, so
+there was nothing a subclass could silently break.
+
+**Cleanup byproduct:** seven now-genuinely-unused imports removed from
+`nfc_manager.py` (`shared_preload`, `EVENT_AUTO_CREATE`, `EVENT_RELEASE`,
+`EVENT_SPOOL_READY`, `EVENT_TAG_READ`, `EVENT_UNRESOLVED`,
+`shared_effect_name`, `CurrentTag`, `TOOL_GATE_BYPASS`) — all either moved
+to `shared_reader.py` with the code that uses them, or (in `CurrentTag`'s
+case) were already dead before this session and just happened to be in the
+same import block being rewritten anyway.
+
+**Deliberately not touched, per explicit direction — the poll engine.**
+`_poll_timer_event()` and `_poll()` still live on `NFCGate`, still branching
+on `self._shared` internally (six branch points, one implicit via
+`_scan_enabled` being forced `False` at config time rather than checked
+directly in the poll function itself — see the earlier "where does the poll
+timer sit" discussion). `SharedNFCReader` inherits both unmodified. That
+split is real design work — deciding whether it's a template-method split,
+a duplicated-and-trimmed pair, or something else — not a mechanical move,
+and is intentionally left for a separate pass.
+
+Verification: `py_compile` and an `ast`-based undefined-name sweep on all
+three touched files (clean), `pyflakes` (clean except two pre-existing,
+unrelated warnings carried over unchanged by the extraction: an unused
+`last_action` local in `_shared_next_action()`, an unused `name` local in
+`load_config_prefix()`). `nfc_manager.py`: 3595 → 2795 lines.
+`shared_reader.py`: 867 new lines. None of this has run against real
+Klipper/hardware — this is a structural refactor with no behavior change
+intended (`SharedNFCReader` inherits everything it doesn't override), but
+that claim itself is only as good as the static verification above until
+someone starts a printer with a `[nfc_gate shared]` section configured.
+
+---
+
+## 2026-07-14, continued — real Happy Hare compatibility harness (`test/hh_compat/`), and it immediately found a real bug
+
+The claim at the end of the previous entry — "that claim is only as good as
+the static verification above" — no longer has to be a claim. A real local
+Happy Hare checkout exists on this machine
+(`~/Documents/GitHub/Happy-Hare`, `origin` = `moggieuk/Happy-Hare`, on
+branch `rfid`), so this pass builds a harness that checks the previous
+session's work against real Happy Hare V4 source instead of trusted-but-
+unverified porting notes.
+
+**How the harness works, concretely** — see `test/hh_compat/README.md` for
+the full writeup:
+- `bootstrap.py` merges this repo's `klippy/extras` and the real Happy
+  Hare checkout's `extras/` into one synthetic `klippy.extras` namespace
+  package (`__path__ = [ours, theirs]`), so `from ..mmu.mmu_constants
+  import ...` inside our code resolves against the *real* file — no
+  copying or symlinks, purely `sys.modules` construction. This only works
+  because Happy Hare's `extras/mmu` has no `__init__.py` (a namespace
+  package) and `mmu_constants.py` has zero imports of its own, so
+  importing it doesn't transitively pull in the rest of the
+  Klipper-core-dependent MMU stack (kinematics, `mcu.py`, `toolhead.py`)
+  that isn't checked out on this machine.
+- `test_mmu_api_surface.py`: static, `ast`-based checks (not import) that
+  every `mmu.*`/`mmu_constants.*` touchpoint `nfc_gates` depends on exists
+  in the real source with a compatible shape — formalizes what was
+  previously a one-off manual grep pass into something re-runnable any
+  time the Happy Hare checkout updates. **All 11 checks pass against
+  `rfid`**: `mmu_constants.py`'s 7 required constants, `MmuController`'s
+  instance attrs (`action`, `num_gates`, `tool_selected`, `gate_selected`,
+  `filament_pos`, `gate_maps`) and methods (`drive`, `select_gate`,
+  `initialize_filament_position`, `wrap_suppress_visual_log`),
+  `move_filament()`'s full keyword signature (`endstop_name`, `wait`
+  included), `MmuGateMaps`/`MmuDrive`/`MmuUnit` attribute shapes, the
+  `gear_short_move_speed` `ParamSpec`, and — the one that actually
+  mattered most, since it's the one place `scan_jog.py` reasons about a
+  raw stepper return value — `MmuStepper.get_position()` really does
+  return a list with position first (`[commanded_pos, 0., 0., 0.]`),
+  confirming the `pos[0]` indexing in `mmu_gear_position()`.
+- `test_shared_reader_compat.py`: dynamic tests — actually construct
+  `SharedNFCReader` and plain `NFCGate` against `FakeConfig`/`FakePrinter`
+  (real value semantics, not bare `MagicMock`s, since our code branches on
+  config values) and a `build_fake_mmu()` spec'd from the same verified
+  attribute list (`MagicMock(spec=[...])`, not a bare `MagicMock()` that
+  would silently swallow a typo'd attribute access). The I2C/SPI reader
+  driver construction is patched out — real hardware plumbing, orthogonal
+  to Happy Hare API compatibility.
+
+**🐛 Found — and fixed — a real crash bug in the previous extraction pass,
+not a Happy Hare compatibility gap.** `NFCGate.__init__` still did
+`self.reactor.register_timer(self._shared_led_failsafe_event)`
+**unconditionally**, but `_shared_led_failsafe_event` moved to
+`SharedNFCReader` in the same-day extraction earlier. Every plain per-lane
+`NFCGate` construction — i.e. every normal `[nfc_gate laneN]` section —
+crashed with `AttributeError` at `__init__`. This wasn't caught by the
+extraction's own `py_compile`/`pyflakes`/AST-undefined-name verification
+at the time because `self.<name>` is a dynamic attribute lookup — none of
+those tools can know whether `self` will actually have that attribute at
+runtime without knowing its concrete class, and a bare-name check doesn't
+even look at attribute expressions. This is exactly the kind of bug this
+harness exists to catch by actually constructing the object. Before fixing,
+every *other* now-moved-method reference remaining in `nfc_manager.py` (18
+call sites across 11 method names) was individually checked against its
+surrounding control flow — all 18 are properly guarded by `if self._shared:`
+either directly or via a registration that's itself gated (e.g. the
+`idle_timeout:printing`/`idle_timeout:ready` handler registration), so this
+was the one genuine gap, not a symptom of a wider pattern. Fix: made the
+timer registration itself conditional on `self._shared`, `None` otherwise
+— matches the only two read sites, both already on `SharedNFCReader` and
+already only ever invoked when `self._shared` is `True`.
+
+All 20 tests (11 static + 9 dynamic) pass against the real `rfid` branch
+after the fix. `nfc_manager.py` still compiles clean, `pyflakes` still
+shows only the same two pre-existing, unrelated warnings.
+
+**Scope note:** this harness validates the shared-reader dependency chain
+(`SharedNFCReader`, `NFCGate` base, `GateState`, `tag_handler`,
+`spoolman_client`, `KlipperInterface`, `NFC_LEDManager`) against Happy
+Hare's mmu API surface. It does not attempt hardware I/O, does not exercise
+`_poll_timer_event()`/`_poll()`'s full branching logic (deliberately
+unrefactored, per the standing "hold off on poll resolution" direction),
+and needs a full Klipper core checkout (not just Happy Hare's `extras/`) to
+go any further toward true integration testing than it already does.
+Embedding this code into the Happy Hare tree itself, and wiring it into
+the `rfid` branch as a base module, remain separate, larger pieces of work
+this harness was built to de-risk, not substitute for.
+
+---
+
 ## Happy Hare gate-map state-ownership migration — 🔴 high risk
 
 > [!CAUTION]

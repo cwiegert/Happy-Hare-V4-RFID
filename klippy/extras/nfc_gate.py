@@ -27,6 +27,7 @@ __version__ = '1.0.0'
 
 from .nfc_gates import nfc_manager as _nfc_manager
 from .nfc_gates.nfc_manager import NFCGate, NFCGateDefaults, _lane_instances
+from .nfc_gates.shared_reader import SharedNFCReader
 
 # Tracks which printer object owns the current _lane_instances contents.
 # A new Printer is created on every Klipper RESTART, so when this changes
@@ -57,7 +58,12 @@ def load_config_prefix(config):
         _nfc_manager._shared_configured = False
         del _nfc_manager._diagnostic_warnings[:]
     defaults = printer.lookup_object('nfc_gate', None)
-    gate     = NFCGate(config, defaults)
+    # The 'shared' key controls which class gets built, not just how one
+    # class's __init__ parses config -- a [nfc_gate shared] section gets the
+    # shared reader's own command surface (NFC_SHARED and friends); every
+    # other section gets a plain per-lane NFCGate.
+    gate_cls = SharedNFCReader if config.getboolean('shared', False) else NFCGate
+    gate     = gate_cls(config, defaults)
     # Replace any existing entry for this lane name (guards against Klipper
     # calling load_config_prefix more than once per section in a single run).
     name = config.get_name()
